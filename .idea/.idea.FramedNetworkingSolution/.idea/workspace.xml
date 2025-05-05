@@ -60,7 +60,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1746447215156</updated>
-      <workItem from="1746447216212" duration="7748000" />
+      <workItem from="1746447216212" duration="7893000" />
     </task>
     <task id="LOCAL-00001" summary="Update project structure, improve documentation, and fix typos&#10;&#10;Removed debug.log and reorganized project configuration files. Enhanced code documentation in multiple files for better clarity. Fixed typos in variable names and comments, and addressed event handler naming inconsistencies.">
       <option name="closed" value="true" />
@@ -70,7 +70,15 @@
       <option name="project" value="LOCAL" />
       <updated>1746461180517</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="Add IntelliJ IDEA project configuration files&#10;&#10;These files include VCS mappings, workspace settings, and project-specific configurations for the FramedNetworkingSolution. This ensures proper environment setup and consistency for development using IntelliJ-based tools.">
+      <option name="closed" value="true" />
+      <created>1746461281339</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1746461281339</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -81,7 +89,8 @@
   <component name="VcsManagerConfiguration">
     <option name="CLEAR_INITIAL_COMMIT_MESSAGE" value="true" />
     <MESSAGE value="Update project structure, improve documentation, and fix typos&#10;&#10;Removed debug.log and reorganized project configuration files. Enhanced code documentation in multiple files for better clarity. Fixed typos in variable names and comments, and addressed event handler naming inconsistencies." />
-    <option name="LAST_COMMIT_MESSAGE" value="Update project structure, improve documentation, and fix typos&#10;&#10;Removed debug.log and reorganized project configuration files. Enhanced code documentation in multiple files for better clarity. Fixed typos in variable names and comments, and addressed event handler naming inconsistencies." />
+    <MESSAGE value="Add IntelliJ IDEA project configuration files&#10;&#10;These files include VCS mappings, workspace settings, and project-specific configurations for the FramedNetworkingSolution. This ensures proper environment setup and consistency for development using IntelliJ-based tools." />
+    <option name="LAST_COMMIT_MESSAGE" value="Add IntelliJ IDEA project configuration files&#10;&#10;These files include VCS mappings, workspace settings, and project-specific configurations for the FramedNetworkingSolution. This ensures proper environment setup and consistency for development using IntelliJ-based tools." />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
