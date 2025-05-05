@@ -1,7 +1,7 @@
 using System;
 using FramedNetworkingSolution.Transport.Interface;
 
-namespace FramedNetworkingSolution.SocketConnection.Interface
+namespace FramedNetworkingSolution.SocketConnectors.Interface
 {
     public interface IServer : IDisposable
     {
@@ -9,6 +9,7 @@ namespace FramedNetworkingSolution.SocketConnection.Interface
         void Initialize(string address, int port);
         void StartListening();
         void StopListening();
+        
         // void AcceptConnection();
         void StartAcceptingConnections();
         void StopAcceptingConnections();

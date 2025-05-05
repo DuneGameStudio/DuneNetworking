@@ -9,8 +9,8 @@ namespace FramedNetworkingSolution.Transport.Interface
         public Socket socket { get; set; }
         SegmentedBuffer receiveBuffer { get; set; }
         SegmentedBuffer sendBuffer { get; set; }
-        event EventHandler<SocketAsyncEventArgs> OnPacketSent;
-        Action<object, SocketAsyncEventArgs, Segment> OnPacketReceived { get; set; }
+        event EventHandler<SocketAsyncEventArgs> OnPacketSentEventHandler;
+        event Action<object, SocketAsyncEventArgs, Segment> OnPacketReceived;
 
         void ReceiveAsync(int bufferSize = 2);
         void SendAsync(Memory<byte> memory);
