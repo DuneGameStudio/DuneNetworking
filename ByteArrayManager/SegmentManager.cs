@@ -6,15 +6,21 @@ namespace FramedNetworkingSolution.ByteArrayManager
     public interface SegmentManager
     {
         /// <summary>
-        /// 
+        ///     Identifier representing a unique ID associated with a specific segment or operation.
         /// </summary>
-        /// <value></value>
+        /// <value>
+        ///     The ID is a 16-bit unsigned integer that can be used to track or differentiate between
+        ///     various segments or operations in a networking solution.
+        /// </value>
         ushort Id { get; set; }
 
         /// <summary>
-        ///     Segment Reference Produced Oreginally From a SegmentedBuffer Instance.
+        ///     Represents a segment used for managing a portion of data in the buffer system.
         /// </summary>
-        /// <value></value>
+        /// <value>
+        ///     The segment is a structure that holds information about its memory index and allocated space,
+        ///     facilitating operations such as serialization, deserialization, and memory management within the system.
+        /// </value>
         Segment segment { get; set; }
 
         /// <summary>
@@ -24,7 +30,7 @@ namespace FramedNetworkingSolution.ByteArrayManager
         public int PacketSize { get; set; }
 
         /// <summary>
-        ///     Ment To be Overridden To Implment Data Deserialization.
+        ///     Meant To be Overridden To Implement Data Deserialization.
         /// </summary>
         void OnDeserialize();
 
@@ -34,9 +40,9 @@ namespace FramedNetworkingSolution.ByteArrayManager
         void OnSerialize();
 
         /// <summary>
-        ///     Starts an Async Send Operation and Releases the Segment.
+        ///     Sends data asynchronously using the provided transport object and releases the associated segment.
         /// </summary>
-        /// <param name="transport"></param>
+        /// <param name="transport">The transport object responsible for handling the send operation.</param>
         void OnSend(ITransport transport)
         {
             transport.SendAsync(transport.sendBuffer.GetRegisteredMemory(segment.SegmentIndex, PacketSize));
@@ -44,9 +50,13 @@ namespace FramedNetworkingSolution.ByteArrayManager
         }
 
         /// <summary>
-        ///     Reserves a Segment To Serialize the Packet Into it, and Then Calls the OnSerialize 
+        ///     Serializes data into a newly reserved segment within the provided segmented buffer
+        ///     and prepares it for further operations.
         /// </summary>
-        /// <param name="segmentedBuffer"></param>
+        /// <param name="segmentedBuffer">
+        ///     The segmented buffer instance where the new segment will be reserved
+        ///     and the data will be serialized into.
+        /// </param>
         void Serialize(SegmentedBuffer segmentedBuffer)
         {
             if (segmentedBuffer.ReserveMemory(out Segment newSegment))
@@ -54,13 +64,13 @@ namespace FramedNetworkingSolution.ByteArrayManager
                 Debug.WriteLine("New Segment");
 
                 segment = newSegment;
-            };
+            }
             
             OnSerialize();
         }
 
         /// <summary>
-        ///     Calles OnDeserialize and Releases The Segment.
+        ///     Calls OnDeserialize and Releases The Segment.
         /// </summary>
         void Deserialize()
         {

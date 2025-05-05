@@ -6,8 +6,8 @@ namespace FramedNetworkingSolution.Transport.Interface
 {
     public interface ITransportConnector
     {
-        event EventHandler<SocketAsyncEventArgs> OnAttemptConnectResult;
-        event EventHandler<SocketAsyncEventArgs> OnDisconnected;
+        event EventHandler<SocketAsyncEventArgs> OnAttemptConnectResultEventHandler;
+        event EventHandler<SocketAsyncEventArgs> OnDisconnectedEventHandler;
         void Initialize(string address, int port);
         void AttemptConnectAsync();
         void DisconnectAsync();

@@ -2,9 +2,9 @@ using System;
 using System.Net;
 using System.Diagnostics;
 using System.Net.Sockets;
-using FramedNetworkingSolution.SocketConnection.Interface;
+using FramedNetworkingSolution.SocketConnectors.Interface;
 
-namespace FramedNetworkingSolution.SocketConnection
+namespace FramedNetworkingSolution.SocketConnectors
 {
     public class ClientConnector : IClient
     {
@@ -17,13 +17,7 @@ namespace FramedNetworkingSolution.SocketConnection
         ///     Socket Connection State This is the Same as the State Inside the Socket Itself.
         /// </summary>
         /// <value></value>
-        public bool IsConnected
-        {
-            get
-            {
-                return socket.Connected;
-            }
-        }
+        public bool IsConnected => socket.Connected;
 
         /// <summary>
         ///     Event Arguments For Sending Operations.
@@ -44,30 +38,28 @@ namespace FramedNetworkingSolution.SocketConnection
 
             connectEventArgs = new SocketAsyncEventArgs();
             disconnectEventArgs = new SocketAsyncEventArgs();
-
-            OnDisconnectedHandler += (object sender, SocketAsyncEventArgs onDisconnected) => { };
-            OnAttemptConnectResponceHandler = (sender, state, connectedTransport) => { };
-
+            
             connectEventArgs.Completed += OnAttemptConnectResponse;
             disconnectEventArgs.Completed += OnDisconnected;
         }
 
         #region IClient
+
         /// <summary>
         ///     On Packet Received Event Handler.
         /// </summary>
-        public Action<object, bool, Transport.Interface.ITransport?> OnAttemptConnectResponceHandler { get; }
+        public event Action<object, bool, Transport.Interface.ITransport?>? OnAttemptConnectResponseHandler;
 
         /// <summary>
         ///     On Packet Disconnect Event Handler.
         /// </summary>
-        public event EventHandler<SocketAsyncEventArgs> OnDisconnectedHandler;
+        public event EventHandler<SocketAsyncEventArgs>? OnDisconnectedHandler;
 
         /// <summary>
-        ///     
+        ///     Initiates an asynchronous attempt to connect to the specified server address and port.
         /// </summary>
-        /// <param name="address"></param>
-        /// <param name="port"></param>
+        /// <param name="address">The IP address of the server to connect to.</param>
+        /// <param name="port">The port number to connect to on the server.</param>
         public void AttemptConnectAsync(string address, int port)
         {
             connectEventArgs.RemoteEndPoint = new IPEndPoint(IPAddress.Parse(address), port);
@@ -87,11 +79,11 @@ namespace FramedNetworkingSolution.SocketConnection
         {
             if (connectEventArgs.SocketError == SocketError.Success)
             {
-                OnAttemptConnectResponceHandler(sender, true, new Transport.Transport(connectEventArgs.ConnectSocket));
+                OnAttemptConnectResponseHandler?.Invoke(sender, true, new Transport.Transport(connectEventArgs.ConnectSocket));
             }
             else
             {
-                OnAttemptConnectResponceHandler(sender, false, null);
+                OnAttemptConnectResponseHandler?.Invoke(sender, false, null);
                 Debug.WriteLine("Session Try Connect Failed", "log");
             }
         }
@@ -116,7 +108,7 @@ namespace FramedNetworkingSolution.SocketConnection
         {
             socket.Close();
 
-            OnDisconnectedHandler(sender, onDisconnected); //, Id);
+            OnDisconnectedHandler?.Invoke(sender, onDisconnected);
         }
 
         #endregion
@@ -152,7 +144,6 @@ namespace FramedNetworkingSolution.SocketConnection
         public void Dispose()
         {
             Dispose(true);
-            GC.SuppressFinalize(this);
         }
         #endregion
     }

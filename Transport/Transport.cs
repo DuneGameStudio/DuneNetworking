@@ -27,7 +27,7 @@ namespace FramedNetworkingSolution.Transport
         /// <summary>
         ///     The Segment Currently Used To Store The Latest Received Packet.
         /// </summary>
-        private Segment currentReceiveingSegment;
+        private Segment currentReceivingSegment;
 
         /// <summary>
         ///     Event Arguments For Sending Operation.
@@ -58,36 +58,31 @@ namespace FramedNetworkingSolution.Transport
         {
             this.socket = socket;
 
-            sendBuffer = new SegmentedBuffer(8192, 256);
-            receiveBuffer = new SegmentedBuffer(8192, 256);
-
-            OnPacketSent += (object sender, SocketAsyncEventArgs onDisconnected) => { };
-            OnPacketReceived = (sender, onDisconnected, segment) => { };
-            OnAttemptConnectResult += (object sender, SocketAsyncEventArgs onDisconnected) => { };
-            OnDisconnected += (object sender, SocketAsyncEventArgs onDisconnected) => { };
-
+            sendBuffer = new SegmentedBuffer();
+            receiveBuffer = new SegmentedBuffer();
+            
             sendEventArgs = new SocketAsyncEventArgs();
             receiveEventArgs = new SocketAsyncEventArgs();
             connectEventArgs = new SocketAsyncEventArgs();
             disconnectEventArgs = new SocketAsyncEventArgs();
 
-            sendEventArgs.Completed += OnPacketSent;
+            sendEventArgs.Completed += OnPacketSentEventHandler;
             receiveEventArgs.Completed += PacketReceived;
-            connectEventArgs.Completed += OnAttemptConnectResult;
-            disconnectEventArgs.Completed += OnDisconnected;
+            
+            connectEventArgs.Completed += OnAttemptConnectResultEventHandler;
+            disconnectEventArgs.Completed += OnDisconnectedEventHandler;
         }
 
         #region ITransporte
         /// <summary>
         ///     On Packet Sent Event Handler.
         /// </summary>
-        // public Action<object, SocketAsyncEventArgs> OnPacketSent;
-        public event EventHandler<SocketAsyncEventArgs> OnPacketSent;
+        public event EventHandler<SocketAsyncEventArgs>? OnPacketSentEventHandler;
 
         /// <summary>
         ///     On Packet Received Event Handler.
         /// </summary>
-        public Action<object, SocketAsyncEventArgs, Segment> OnPacketReceived { get; set; }
+        public event Action<object, SocketAsyncEventArgs, Segment>? OnPacketReceived;
 
         /// <summary>
         ///     Start an Async Receive Operation to receive data from the client using the given buffer size.
@@ -99,7 +94,7 @@ namespace FramedNetworkingSolution.Transport
             {
                 if (receiveBuffer.ReserveMemory(out Segment newSegment, bufferSize))
                 {
-                    currentReceiveingSegment = newSegment;
+                    currentReceivingSegment = newSegment;
                     receiveEventArgs.SetBuffer(newSegment.Memory);
 
                     if (!socket.ReceiveAsync(receiveEventArgs))
@@ -113,10 +108,11 @@ namespace FramedNetworkingSolution.Transport
         }
 
         /// <summary>
-        /// 
+        ///     Handles the reception of data from a socket asynchronously.
+        ///     Processes received data and triggers the OnPacketReceived event accordingly.
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="onReceived"></param>
+        /// <param name="sender">The source of the received data event, typically the socket.</param>
+        /// <param name="onReceived">The event arguments containing details of the received data.</param>
         private void PacketReceived(object sender, SocketAsyncEventArgs onReceived)
         {
             switch (onReceived.BytesTransferred)
@@ -131,15 +127,14 @@ namespace FramedNetworkingSolution.Transport
                     return;
             }
 
-            OnPacketReceived(sender, onReceived, currentReceiveingSegment);
+            OnPacketReceived?.Invoke(sender, onReceived, currentReceivingSegment);
         }
 
         /// <summary>
         ///     Starts an Async Send Operation to send the provided packet to the client.
         ///     The Function Adds the Length of the Packet To the First 2 bytes of the Packet Before Sending It.
         /// </summary>
-        /// <param name="packet">A Memory Of a Byte Array Containing the Data Needed To Be Sent.</param>
-        /// <param name="packetLength">The Length of the Packet That Needs to be Sent.</param>
+        /// <param name="memory">A Memory Of a Byte Array Containing the Data Needed To Be Sent.</param>
         // public void SendAsync(int packetLength, int index)
         public void SendAsync(Memory<byte> memory)
         {
@@ -151,7 +146,7 @@ namespace FramedNetworkingSolution.Transport
 
                 if (!socket.SendAsync(sendEventArgs))
                 {
-                    OnPacketSent(socket, sendEventArgs);
+                    OnPacketSentEventHandler?.Invoke(socket, sendEventArgs);
                 }
             }
             else
@@ -170,12 +165,12 @@ namespace FramedNetworkingSolution.Transport
         /// <summary>
         ///     The TryConnect Result Callback
         /// </summary>
-        public event EventHandler<SocketAsyncEventArgs> OnAttemptConnectResult;
+        public event EventHandler<SocketAsyncEventArgs>? OnAttemptConnectResultEventHandler;
 
         /// <summary>
         ///     The OnDisconnected Callback
         /// </summary>
-        public event EventHandler<SocketAsyncEventArgs> OnDisconnected;
+        public event EventHandler<SocketAsyncEventArgs>? OnDisconnectedEventHandler;
 
         /// <summary>
         ///     Intilizes The Connection Endpoint given the Parameters <paramref name="address"/> and <paramref name="port"/>
@@ -196,7 +191,7 @@ namespace FramedNetworkingSolution.Transport
 
             if (!socket.ConnectAsync(connectEventArgs))
             {
-                OnAttemptConnectResult(socket, connectEventArgs);
+                OnAttemptConnectResultEventHandler?.Invoke(socket, connectEventArgs);
             }
         }
 
@@ -209,7 +204,7 @@ namespace FramedNetworkingSolution.Transport
 
             if (!socket.DisconnectAsync(disconnectEventArgs))
             {
-                OnDisconnected(socket, disconnectEventArgs);
+                OnDisconnectedEventHandler?.Invoke(socket, disconnectEventArgs);
             }
         }
         #endregion
@@ -221,9 +216,8 @@ namespace FramedNetworkingSolution.Transport
         private bool _disposedValue;
 
         /// <summary>
-        /// 
+        ///     Releases All Resources Used By The Transport Object.
         /// </summary>
-        /// <param name="disposing"></param>
         protected virtual void Dispose(bool disposing)
         {
             if (!_disposedValue)
@@ -235,6 +229,8 @@ namespace FramedNetworkingSolution.Transport
                     socket.Dispose();
                     sendEventArgs.Dispose();
                     receiveEventArgs.Dispose();
+                    connectEventArgs.Dispose();
+                    disconnectEventArgs.Dispose();
                 }
                 _disposedValue = true;
             }
@@ -246,7 +242,6 @@ namespace FramedNetworkingSolution.Transport
         public void Dispose()
         {
             Dispose(true);
-            GC.SuppressFinalize(this);
         }
         #endregion
     }

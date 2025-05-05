@@ -3,37 +3,35 @@ using System.Net;
 using System.Diagnostics;
 using System.Net.Sockets;
 using FramedNetworkingSolution.Transport.Interface;
-using FramedNetworkingSolution.SocketConnection.Interface;
+using FramedNetworkingSolution.SocketConnectors.Interface;
 
-namespace FramedNetworkingSolution.SocketConnection
+namespace FramedNetworkingSolution.SocketConnectors
 {
     public class ServerConnector : IServer
     {
         /// <summary>
         ///     The Server's Socket.
         /// </summary>
-        private Socket socket;
+        private readonly Socket socket;
 
         /// <summary>
-        /// Server Connection Listening State.
+        ///     Server Connection Listening State.
         /// </summary>
-        private bool isListening = false;
+        private bool isListening;
 
         /// <summary>
-        /// Server New Client Accepting State.
+        ///     Server New Client Accepting State.
         /// </summary>
-        private bool isAccepting = false;
+        private bool isAccepting;
 
         /// <summary>
         ///     Wrapper Class For The Event That Fires When a New Client Connects.
         /// </summary>
-        private SocketAsyncEventArgs onNewClientConnectionEventArgs;
+        private readonly SocketAsyncEventArgs onNewClientConnectionEventArgs;
 
         /// <summary>
         ///     Initializes The Server To Accept Connections Asynchronously.
         /// </summary>
-        /// <param name="address">Server Address</param>
-        /// <param name="port">Address Port</param>
         public ServerConnector()
         {
             socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
@@ -41,38 +39,38 @@ namespace FramedNetworkingSolution.SocketConnection
             onNewClientConnectionEventArgs = new SocketAsyncEventArgs();
 
             onNewClientConnectionEventArgs.Completed += OnNewConnection;
-
-            onNewClientConnection = (object sender, ITransport Transport) => { };
         }
 
         #region IServer
         /// <summary>
-        /// The Event That Fires When a New Client Connects.
+        ///     The Event That Fires When a New Client Connects.
         /// </summary>
-        public event EventHandler<ITransport> onNewClientConnection;
+        public event EventHandler<ITransport>? onNewClientConnection;
 
         /// <summary>
-        /// 
+        ///     Represents the server's IP endpoint, including the IP address and port number,
+        ///     used to bind the socket for network communication.
         /// </summary>
-        private IPEndPoint? _iPEndPoint;
+        private IPEndPoint? iPEndPoint;
 
         /// <summary>
-        /// 
+        ///     Initializes the server by setting up the network endpoint and binding the server socket
+        ///     using the specified IP address and port number.
         /// </summary>
-        /// <param name="address"></param>
-        /// <param name="port"></param>
+        /// <param name="address">The IP address for the server to bind to.</param>
+        /// <param name="port">The port number for the server to listen on.</param>
         public void Initialize(string address, int port)
         {
-            _iPEndPoint = new IPEndPoint(IPAddress.Parse(address), port);
+            iPEndPoint = new IPEndPoint(IPAddress.Parse(address), port);
             socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, 1);
-            socket.Bind(_iPEndPoint);
+            socket.Bind(iPEndPoint);
         }
 
         /// <summary>
-        /// 
+        ///     Starts the server socket to listen for incoming connections.
+        ///     Ensures the listening state is set and prevents redundant invocations
+        ///     if the server is already in a listening state.
         /// </summary>
-        /// <param name="address"></param>
-        /// <param name="port"></param>
         public void StartListening()
         {
             if (!isListening)
@@ -122,6 +120,10 @@ namespace FramedNetworkingSolution.SocketConnection
             }
         }
 
+        /// <summary>
+        ///     Enables the server to begin accepting client connection requests asynchronously.
+        ///     This sets the accepting state to active and triggers the handling of incoming connections.
+        /// </summary>
         public void StartAcceptingConnections()
         {
             isAccepting = true;
@@ -140,10 +142,10 @@ namespace FramedNetworkingSolution.SocketConnection
         ///     On New Client Connection Accepted.
         /// </summary>
         /// <param name="sender"></param>
-        /// <param name="onDisconnected"></param>
-        private void OnNewConnection(object sender, SocketAsyncEventArgs onNewClientConnectionEventArgs)
+        /// <param name="newClientConnectionEventArgs"></param>
+        private void OnNewConnection(object sender, SocketAsyncEventArgs newClientConnectionEventArgs)
         {
-            onNewClientConnection(sender, new Transport.Transport(onNewClientConnectionEventArgs.AcceptSocket));
+            onNewClientConnection?.Invoke(sender, new Transport.Transport(onNewClientConnectionEventArgs.AcceptSocket));
 
             onNewClientConnectionEventArgs.AcceptSocket = null;
 
@@ -161,14 +163,6 @@ namespace FramedNetworkingSolution.SocketConnection
             socket.Shutdown(SocketShutdown.Both); // Stops sending and receiving.  
             socket.Close();
         }
-
-        // /// <summary>
-        // /// 
-        // /// </summary>
-        // public void DisconnectClient()
-        // {
-
-        // }
         #endregion
 
         #region IDisposable
@@ -178,9 +172,8 @@ namespace FramedNetworkingSolution.SocketConnection
         private bool _disposedValue;
 
         /// <summary>
-        /// 
+        ///     Releases all resources used by the current instance of the server connector class.
         /// </summary>
-        /// <param name="disposing"></param>
         protected virtual void Dispose(bool disposing)
         {
             if (!_disposedValue)
