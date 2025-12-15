@@ -2,12 +2,14 @@
 /shelf/
 /workspace.xml
 # Rider ignored files
-/.idea.DuneNetworking.iml
 /contentModel.xml
-/modules.xml
 /projectSettingsUpdater.xml
-# Editor-based HTTP Client requests
-/httpRequests/
+/.idea.DuneNetworking.iml
+/modules.xml
+# Ignored default folder with query files
+/queries/
 # Datasource local storage ignored files
 /dataSources/
 /dataSources.local.xml
+# Editor-based HTTP Client requests
+/httpRequests/
