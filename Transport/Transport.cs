@@ -2,10 +2,10 @@ using System;
 using System.Net;
 using System.Diagnostics;
 using System.Net.Sockets;
-using FramedNetworkingSolution.ByteArrayManager;
-using FramedNetworkingSolution.Transport.Interface;
+using DuneNetworking.ByteArrayManager;
+using DuneNetworking.Transport.Interface;
 
-namespace FramedNetworkingSolution.Transport
+namespace DuneNetworking.Transport
 {
     public class Transport : ITransport
     {

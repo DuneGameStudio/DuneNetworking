@@ -1,12 +1,12 @@
 {
   "name": "com.ntstudio.framed_networking_solution",
   "version": "0.0.1",
-  "displayName": "FramedNetworkingSolution",
+  "displayName": "DuneNetworking",
   "description": "This is an implementation of the C# sockets socketAsyncEventArgs and the packet framing design pattern offering an ultra low latancy C# networking solution.",
   "unity": "6000.0",
   "unityRelease": "7f1",
-  "documentationUrl": "https://github.com/AbdulrahmanHashem/FramedNetworkingSolution",
-  "changelogUrl": "https://github.com/AbdulrahmanHashem/FramedNetworkingSolution/commits/main/",
+  "documentationUrl": "https://github.com/AbdulrahmanHashem/DuneNetworking",
+  "changelogUrl": "https://github.com/AbdulrahmanHashem/DuneNetworking/commits/main/",
   "licensesUrl": "",
   "dependencies": {},
   "keywords": [

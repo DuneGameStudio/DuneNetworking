@@ -2,9 +2,9 @@ using System;
 using System.Net;
 using System.Diagnostics;
 using System.Net.Sockets;
-using FramedNetworkingSolution.SocketConnectors.Interface;
+using DuneNetworking.SocketConnectors.Interface;
 
-namespace FramedNetworkingSolution.SocketConnectors
+namespace DuneNetworking.SocketConnectors
 {
     public class ClientConnector : IClient
     {

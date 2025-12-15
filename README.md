@@ -1,10 +1,10 @@
-# FramedNetworkingSolution
+# DuneNetworking
 
 [![Version](https://img.shields.io/badge/version-0.0.1-blue.svg)](package.json)
 
 ## Overview
 
-**FramedNetworkingSolution** is a C# networking library designed for ultra-low latency communication. It leverages the power of `System.Net.Sockets.SocketAsyncEventArgs` for high-performance asynchronous socket operations and implements the packet framing design pattern to ensure reliable message delivery over stream-based protocols like TCP.
+**DuneNetworking** is a C# networking library designed for ultra-low latency communication. It leverages the power of `System.Net.Sockets.SocketAsyncEventArgs` for high-performance asynchronous socket operations and implements the packet framing design pattern to ensure reliable message delivery over stream-based protocols like TCP.
 
 This solution aims to provide a robust foundation for building responsive networked applications, particularly suitable for scenarios demanding minimal delay, such as real-time games or high-frequency data streaming.
 

@@ -2,10 +2,10 @@
 using System.Net;
 using System.Diagnostics;
 using System.Net.Sockets;
-using FramedNetworkingSolution.Transport.Interface;
-using FramedNetworkingSolution.SocketConnectors.Interface;
+using DuneNetworking.Transport.Interface;
+using DuneNetworking.SocketConnectors.Interface;
 
-namespace FramedNetworkingSolution.SocketConnectors
+namespace DuneNetworking.SocketConnectors
 {
     public class ServerConnector : IServer
     {

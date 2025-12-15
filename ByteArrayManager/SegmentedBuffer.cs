@@ -1,6 +1,6 @@
 using System;
 
-namespace FramedNetworkingSolution.ByteArrayManager
+namespace DuneNetworking.ByteArrayManager
 {
     public class SegmentedBuffer
     {
@@ -128,7 +128,7 @@ namespace FramedNetworkingSolution.ByteArrayManager
 
 // using System;
 //
-// namespace FramedNetworkingSolution.ByteArrayManager
+// namespace DuneNetworking.ByteArrayManager
 // {
 //     public class SegmentedBuffer
 //     {

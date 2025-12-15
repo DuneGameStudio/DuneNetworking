@@ -2,7 +2,7 @@
 using System;
 using System.Net.Sockets;
 
-namespace FramedNetworkingSolution.Transport.Interface
+namespace DuneNetworking.Transport.Interface
 {
     public interface ITransportConnector
     {

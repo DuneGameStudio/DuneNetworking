@@ -2,7 +2,7 @@
 /shelf/
 /workspace.xml
 # Rider ignored files
-/.idea.FramedNetworkingSolution.iml
+/.idea.DuneNetworking.iml
 /contentModel.xml
 /modules.xml
 /projectSettingsUpdater.xml

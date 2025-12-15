@@ -1,7 +1,7 @@
 using System.Diagnostics;
-using FramedNetworkingSolution.Transport.Interface;
+using DuneNetworking.Transport.Interface;
 
-namespace FramedNetworkingSolution.ByteArrayManager
+namespace DuneNetworking.ByteArrayManager
 {
     public interface SegmentManager
     {
