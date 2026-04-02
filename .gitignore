@@ -61,9 +61,4 @@ $RECYCLE.BIN/
 
 # Windows shortcuts
 *.lnk
-
-# End of https://www.toptal.com/developers/gitignore/api/windows,visualstudiocode,dotnetcore
-
-# Custom rules (everything added below won't be overriden by 'Generate .gitignore File' if you use 'Update' option)
-
-/.idea/.idea.DuneNetworking.dir/.idea/git_toolbox_prj.xml
+.idea/
