@@ -1,21 +1,26 @@
 {
-  "name": "com.ntstudio.framed_networking_solution",
+  "name": "com.dunestudio.networking",
   "version": "0.0.1",
   "displayName": "DuneNetworking",
-  "description": "This is an implementation of the C# sockets socketAsyncEventArgs and the packet framing design pattern offering an ultra low latancy C# networking solution.",
+  "description": "This is an implementation of the C# sockets and the packet framing design pattern offering an ultra low latancy C# networking solution.",
   "unity": "6000.0",
   "unityRelease": "7f1",
-  "documentationUrl": "https://github.com/AbdulrahmanHashem/DuneNetworking",
-  "changelogUrl": "https://github.com/AbdulrahmanHashem/DuneNetworking/commits/main/",
+  "documentationUrl": "https://github.com/DuneGameStudio/DuneNetworking",
+  "changelogUrl": "https://github.com/DuneGameStudio/DuneNetworking/commits/main/",
   "licensesUrl": "",
   "dependencies": {},
   "keywords": [
-    "FramedNetworking",
-    "PacketFraming"
+    "Networking",
+    "PacketFraming",
+    "Sockets",
+    "LowLatency",
+    "C#",
+    "Unity",
+    "Transport"
   ],
   "author": {
     "name": "Abdulrahman",
     "email": "abdalrhmannts@gmail.com",
-    "url": "https://github.com/AbdulrahmanHashem"
+    "url": "https://github.com/DuneGameStudio"
   }
 }
