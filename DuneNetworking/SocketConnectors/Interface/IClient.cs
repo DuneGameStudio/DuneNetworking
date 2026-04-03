@@ -6,12 +6,12 @@ namespace DuneNetworking.SocketConnectors.Interface
 {
     public interface IClient : IDisposable
     {
-        public event Action<object, bool, ITransport?>? OnAttemptConnectResponseHandler;
-        public event EventHandler<SocketAsyncEventArgs>? OnDisconnectedHandler;
-        
-        public void AttemptConnectAsync(string address, int port);
-        public void OnAttemptConnectResponse(object sender, SocketAsyncEventArgs tryConnectEventArgs);
-        public void Disconnect();
-        public void OnDisconnected(object sender, SocketAsyncEventArgs onDisconnected);
+        event Action<object, bool, ITransport?>? OnAttemptConnectResponseHandler;
+        event EventHandler<SocketAsyncEventArgs>? OnDisconnectedHandler;
+
+        void AttemptConnectAsync(string address, int port);
+        void OnAttemptConnectResponse(object sender, SocketAsyncEventArgs tryConnectEventArgs);
+        void Disconnect();
+        void OnDisconnected(object sender, SocketAsyncEventArgs onDisconnected);
     }
 }

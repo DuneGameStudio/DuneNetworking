@@ -2,140 +2,128 @@ using System;
 using System.Net;
 using System.Diagnostics;
 using System.Net.Sockets;
+using DuneNetworking.Buffer;
 using DuneNetworking.ByteArrayManager;
+using DuneNetworking.Threading;
 using DuneNetworking.Transport.Interface;
 
 namespace DuneNetworking.Transport
 {
     public class Transport : ITransport
     {
-        /// <summary>
-        ///     The Transport's Socket.
-        /// </summary>
+        //  Core State
         public Socket socket { get; set; }
-
-        /// <summary>
-        ///     SegmentedBuffer Instance Used For Receive Operations.
-        /// </summary>
-        public SegmentedBuffer receiveBuffer { get; set; }
-
-        /// <summary>
-        ///     SegmentedBuffer Instance Used For Sending Operations.
-        /// </summary>
+        public RingBuffer RingBuffer { get; }
         public SegmentedBuffer sendBuffer { get; set; }
 
-        /// <summary>
-        ///     The Segment Currently Used To Store The Latest Received Packet.
-        /// </summary>
-        private Segment currentReceivingSegment;
-
-        /// <summary>
-        ///     Event Arguments For Sending Operation.
-        /// </summary>
+        private readonly NetworkEngine _engine;
+        
+        //  SocketAsyncEventArgs
         private readonly SocketAsyncEventArgs sendEventArgs;
-
-        /// <summary>
-        ///     Event Arguments For Receiving Operation.
-        /// </summary>
         private readonly SocketAsyncEventArgs receiveEventArgs;
-
-        /// <summary>
-        ///     Event Arguments For The Connecting Operation.
-        /// </summary>
         private readonly SocketAsyncEventArgs connectEventArgs;
-
-        /// <summary>
-        ///     Event Arguments For The Disconnecting Operation.
-        /// </summary>
         private readonly SocketAsyncEventArgs disconnectEventArgs;
 
-        /// <summary>
-        ///     Initializes The Transport Using a Socket.
-        ///     This Initializes All SocketAsyncEventArgs and SegmentedBuffer Needed For the Transport Operation.
-        /// </summary>
-        /// <param name="socket">Socket</param>
-        public Transport(Socket socket)
+        
+        //  Receive Suspension
+        private readonly object _receiveLock = new object();
+        private bool _receiveSuspended;
+
+        
+        //  Constructor
+        public Transport(Socket socket, NetworkEngine engine, int receiveBufferCapacity = 262144)
         {
             this.socket = socket;
+            _engine = engine;
+
+            RingBuffer = new RingBuffer(receiveBufferCapacity);
+            RingBuffer.RegisterOnSpaceFreed(OnBufferSpaceFreed);
 
             sendBuffer = new SegmentedBuffer();
-            receiveBuffer = new SegmentedBuffer();
-            
+
             sendEventArgs = new SocketAsyncEventArgs();
             receiveEventArgs = new SocketAsyncEventArgs();
             connectEventArgs = new SocketAsyncEventArgs();
             disconnectEventArgs = new SocketAsyncEventArgs();
 
             sendEventArgs.Completed += OnPacketSentEventHandler;
-            receiveEventArgs.Completed += PacketReceived;
-            
+            receiveEventArgs.Completed += OnReceiveCompleted;
             connectEventArgs.Completed += OnAttemptConnectResultEventHandler;
             disconnectEventArgs.Completed += OnDisconnectedEventHandler;
         }
 
-        #region ITransporte
+        
+        //  Receive Path (new)
         /// <summary>
-        ///     On Packet Sent Event Handler.
+        ///     Kicks off the receive chain. Call once after the connection is established.
         /// </summary>
-        public event EventHandler<SocketAsyncEventArgs>? OnPacketSentEventHandler;
-
-        /// <summary>
-        ///     On Packet Received Event Handler.
-        /// </summary>
-        public event Action<object, SocketAsyncEventArgs, Segment>? OnPacketReceived;
-
-        /// <summary>
-        ///     Start an Async Receive Operation to receive data from the client using the given buffer size.
-        /// </summary>
-        /// <param name="bufferSize">The Size of the Buffer to be Allocated for the Receiving of Data From Client.</param>
-        public void ReceiveAsync(int bufferSize = 2)
+        public void StartReceiving()
         {
-            if (socket.Connected)
+            lock (_receiveLock)
             {
-                if (receiveBuffer.ReserveMemory(out Segment newSegment, bufferSize))
+                Memory<byte> writable = RingBuffer.GetWritableMemory();
+
+                if (writable.Length == 0)
                 {
-                    currentReceivingSegment = newSegment;
-                    receiveEventArgs.SetBuffer(newSegment.Memory);
-
-                    if (!socket.ReceiveAsync(receiveEventArgs))
-                    {
-                        PacketReceived(socket, receiveEventArgs);
-                    }
-
+                    _receiveSuspended = true;
                     return;
+                }
+                
+                _receiveSuspended = false;
+                receiveEventArgs.SetBuffer(writable);
+
+                if (!socket.ReceiveAsync(receiveEventArgs))
+                {
+                    OnReceiveCompleted(this, receiveEventArgs);
                 }
             }
         }
 
         /// <summary>
-        ///     Handles the reception of data from a socket asynchronously.
-        ///     Processes received data and triggers the OnPacketReceived event accordingly.
+        ///     IOCP completion callback for asynchronous receives.
         /// </summary>
-        /// <param name="sender">The source of the received data event, typically the socket.</param>
-        /// <param name="onReceived">The event arguments containing details of the received data.</param>
-        private void PacketReceived(object sender, SocketAsyncEventArgs onReceived)
+        private void OnReceiveCompleted(object sender, SocketAsyncEventArgs args)
         {
-            switch (onReceived.BytesTransferred)
+            if (args.BytesTransferred == 0 || args.SocketError != SocketError.Success)
             {
-                case 0:
-                    Debug.WriteLine("Received And Empty Packet", "log");
-                    DisconnectAsync();
-                    return;
-
-                case 2:
-                    ReceiveAsync(BitConverter.ToUInt16(onReceived.MemoryBuffer.Span));
-                    return;
+                DisconnectAsync();
+                return;
             }
 
-            OnPacketReceived?.Invoke(sender, onReceived, currentReceivingSegment);
+            RingBuffer.CommitWrite(args.BytesTransferred);
+            _engine.SignalDataReceived(this);
+            StartReceiving();
         }
 
         /// <summary>
-        ///     Starts an Async Send Operation to send the provided packet to the client.
-        ///     The Function Adds the Length of the Packet To the First 2 bytes of the Packet Before Sending It.
+        ///     Called by the ring buffer on every Release (from the deserialization thread).
+        ///     Resumes a suspended receive if the buffer was previously full.
         /// </summary>
-        /// <param name="memory">A Memory Of a Byte Array Containing the Data Needed To Be Sent.</param>
-        // public void SendAsync(int packetLength, int index)
+        private void OnBufferSpaceFreed()
+        {
+            lock (_receiveLock)
+            {
+                if (!_receiveSuspended)
+                    return;
+
+                Memory<byte> writable = RingBuffer.GetWritableMemory();
+
+                if (writable.Length == 0)
+                    return;
+
+                _receiveSuspended = false;
+                receiveEventArgs.SetBuffer(writable);
+
+                if (socket.ReceiveAsync(receiveEventArgs))
+                    return;
+            }
+
+            OnReceiveCompleted(this, receiveEventArgs);
+        }
+        
+        //  Send Path
+        public event EventHandler<SocketAsyncEventArgs>? OnPacketSentEventHandler;
+
         public void SendAsync(Memory<byte> memory)
         {
             if (socket.Connected)
@@ -151,40 +139,21 @@ namespace DuneNetworking.Transport
             }
             else
             {
-                Debug.WriteLine("Receive | Client Is Not Connected", "error");
+                Debug.WriteLine("Send | Client Is Not Connected", "error");
             }
         }
-        #endregion
-
-        #region ITransportConnector
-        /// <summary>
-        ///     The IP of the Other Connected End Point 
-        /// </summary>
+        
+        //  ITransportConnector
         private IPEndPoint? iPEndPoint;
 
-        /// <summary>
-        ///     The TryConnect Result Callback
-        /// </summary>
         public event EventHandler<SocketAsyncEventArgs>? OnAttemptConnectResultEventHandler;
-
-        /// <summary>
-        ///     The OnDisconnected Callback
-        /// </summary>
         public event EventHandler<SocketAsyncEventArgs>? OnDisconnectedEventHandler;
 
-        /// <summary>
-        ///     Intilizes The Connection Endpoint given the Parameters <paramref name="address"/> and <paramref name="port"/>
-        /// </summary>
-        /// <param name="address"></param>
-        /// <param name="port"></param>
         public void Initialize(string address, int port)
         {
             iPEndPoint = new IPEndPoint(IPAddress.Parse(address), port);
         }
 
-        /// <summary>
-        ///     Starts and Async Connection Attempt
-        /// </summary>
         public void AttemptConnectAsync()
         {
             connectEventArgs.RemoteEndPoint = iPEndPoint;
@@ -195,29 +164,25 @@ namespace DuneNetworking.Transport
             }
         }
 
-        /// <summary>
-        ///     Starts an Async Disconnection Operation.
-        /// </summary>
         public void DisconnectAsync()
         {
-            socket.Shutdown(SocketShutdown.Both);
+            try
+            {
+                socket.Shutdown(SocketShutdown.Both);
+            }
+            catch (SocketException) { }
+            catch (ObjectDisposedException) { }
 
             if (!socket.DisconnectAsync(disconnectEventArgs))
             {
                 OnDisconnectedEventHandler?.Invoke(socket, disconnectEventArgs);
             }
         }
-        #endregion
 
-        #region IDisposable
-        /// <summary>
-        ///     Disposed State
-        /// </summary>
+        
+        //  IDisposable
         private bool _disposedValue;
 
-        /// <summary>
-        ///     Releases All Resources Used By The Transport Object.
-        /// </summary>
         protected virtual void Dispose(bool disposing)
         {
             if (!_disposedValue)
@@ -225,7 +190,6 @@ namespace DuneNetworking.Transport
                 if (disposing)
                 {
                     Debug.WriteLine("Disposing Transport");
-                    // Dispose managed resources
                     socket.Dispose();
                     sendEventArgs.Dispose();
                     receiveEventArgs.Dispose();
@@ -236,13 +200,9 @@ namespace DuneNetworking.Transport
             }
         }
 
-        /// <summary>
-        ///     Disposes the Transport.
-        /// </summary>
         public void Dispose()
         {
             Dispose(true);
         }
-        #endregion
     }
 }

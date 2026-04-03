@@ -9,8 +9,6 @@ namespace DuneNetworking.SocketConnectors.Interface
         void Initialize(string address, int port);
         void StartListening();
         void StopListening();
-        
-        // void AcceptConnection();
         void StartAcceptingConnections();
         void StopAcceptingConnections();
         void StopServer();

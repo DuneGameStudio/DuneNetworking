@@ -1,18 +1,29 @@
 using System;
 using System.Net.Sockets;
+using DuneNetworking.Buffer;
 using DuneNetworking.ByteArrayManager;
 
 namespace DuneNetworking.Transport.Interface
 {
     public interface ITransport : ITransportConnector, IDisposable
     {
-        public Socket socket { get; set; }
-        SegmentedBuffer receiveBuffer { get; set; }
-        SegmentedBuffer sendBuffer { get; set; }
-        event EventHandler<SocketAsyncEventArgs> OnPacketSentEventHandler;
-        event Action<object, SocketAsyncEventArgs, Segment> OnPacketReceived;
+        /// <summary>
+        ///     Ring buffer for the receive path (zero-copy).
+        /// </summary>
+        RingBuffer RingBuffer { get; }
 
-        void ReceiveAsync(int bufferSize = 2);
+        /// <summary>
+        ///     Segmented buffer for the send path (unchanged).
+        /// </summary>
+        SegmentedBuffer sendBuffer { get; set; }
+
+        event EventHandler<SocketAsyncEventArgs> OnPacketSentEventHandler;
+
+        /// <summary>
+        ///     Kicks off the receive chain. Call once after connection is established.
+        /// </summary>
+        void StartReceiving();
+
         void SendAsync(Memory<byte> memory);
     }
 }
