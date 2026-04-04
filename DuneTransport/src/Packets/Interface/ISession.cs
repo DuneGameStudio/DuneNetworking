@@ -1,9 +1,9 @@
 ﻿using System;
 using System.Net.Sockets;
-using DuneNetworking.ByteArrayManager;
-using DuneNetworking.Transport.Interface;
+using DuneTransport.ByteArrayManager;
+using DuneTransport.Transport.Interface;
 
-namespace DuneNetworking.Packets
+namespace DuneTransport.Packets.Interface
 {
     public interface ISession
     {

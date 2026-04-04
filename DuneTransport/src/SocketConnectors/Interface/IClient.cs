@@ -1,8 +1,8 @@
 using System;
 using System.Net.Sockets;
-using DuneNetworking.Transport.Interface;
+using DuneTransport.Transport.Interface;
 
-namespace DuneNetworking.SocketConnectors.Interface
+namespace DuneTransport.SocketConnectors.Interface
 {
     public interface IClient : IDisposable
     {

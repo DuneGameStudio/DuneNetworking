@@ -1,8 +1,7 @@
-
 using System;
 using System.Net.Sockets;
 
-namespace DuneNetworking.Transport.Interface
+namespace DuneTransport.Transport.Interface
 {
     public interface ITransportConnector
     {

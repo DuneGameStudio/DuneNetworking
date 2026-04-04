@@ -1,10 +1,10 @@
 using System;
-using System.Net;
 using System.Diagnostics;
+using System.Net;
 using System.Net.Sockets;
-using DuneNetworking.SocketConnectors.Interface;
+using DuneTransport.SocketConnectors.Interface;
 
-namespace DuneNetworking.SocketConnectors
+namespace DuneTransport.SocketConnectors
 {
     public class ClientConnector : IClient
     {

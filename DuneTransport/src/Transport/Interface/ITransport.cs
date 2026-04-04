@@ -1,8 +1,8 @@
 using System;
 using System.Net.Sockets;
-using DuneNetworking.ByteArrayManager;
+using DuneTransport.ByteArrayManager;
 
-namespace DuneNetworking.Transport.Interface
+namespace DuneTransport.Transport.Interface
 {
     public interface ITransport : ITransportConnector, IDisposable
     {

@@ -1,7 +1,7 @@
 using System;
-using DuneNetworking.Transport.Interface;
+using DuneTransport.Transport.Interface;
 
-namespace DuneNetworking.SocketConnectors.Interface
+namespace DuneTransport.SocketConnectors.Interface
 {
     public interface IServer : IDisposable
     {

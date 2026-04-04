@@ -1,11 +1,11 @@
 using System;
-using System.Net;
 using System.Diagnostics;
+using System.Net;
 using System.Net.Sockets;
-using DuneNetworking.ByteArrayManager;
-using DuneNetworking.Transport.Interface;
+using DuneTransport.ByteArrayManager;
+using DuneTransport.Transport.Interface;
 
-namespace DuneNetworking.Transport
+namespace DuneTransport.Transport
 {
     public class Transport : ITransport
     {

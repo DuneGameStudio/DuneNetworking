@@ -1,6 +1,6 @@
 using System;
 
-namespace DuneNetworking.ByteArrayManager
+namespace DuneTransport.ByteArrayManager
 {
     public struct Segment
     {

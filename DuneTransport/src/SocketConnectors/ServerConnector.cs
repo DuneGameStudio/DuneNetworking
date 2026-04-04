@@ -1,11 +1,11 @@
 ﻿using System;
-using System.Net;
 using System.Diagnostics;
+using System.Net;
 using System.Net.Sockets;
-using DuneNetworking.Transport.Interface;
-using DuneNetworking.SocketConnectors.Interface;
+using DuneTransport.SocketConnectors.Interface;
+using DuneTransport.Transport.Interface;
 
-namespace DuneNetworking.SocketConnectors
+namespace DuneTransport.SocketConnectors
 {
     public class ServerConnector : IServer
     {

@@ -1,9 +1,9 @@
 using System.Diagnostics;
-using DuneNetworking.Transport.Interface;
+using DuneTransport.Transport.Interface;
 
-namespace DuneNetworking.ByteArrayManager
+namespace DuneTransport.ByteArrayManager.Interface
 {
-    public interface SegmentManager
+    public interface ISegmentManager
     {
         /// <summary>
         ///     Identifier representing a unique ID associated with a specific segment or operation.

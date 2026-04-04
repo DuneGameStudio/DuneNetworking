@@ -1,6 +1,7 @@
 ﻿using System;
+using DuneTransport.Packets.Interface;
 
-namespace DuneNetworking.Packets
+namespace DuneTransport.Packets
 {
     public static class PacketFactory
     {
