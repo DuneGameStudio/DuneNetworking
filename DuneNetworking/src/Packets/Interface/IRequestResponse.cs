@@ -1,6 +1,6 @@
 ﻿using DuneTransport.ByteArrayManager.Interface;
 
-namespace DuneTransport.Packets.Interface
+namespace DuneNetworking.Packets.Interface
 {
     public interface IRequestResponse : ISegmentManager
     {

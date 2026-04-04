@@ -2,9 +2,11 @@ using System;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
-using DuneTransport.SocketConnectors.Interface;
+using DuneNetworking.SocketConnectors.Interface;
+using DuneTransport.Transport;
+using DuneTransport.Transport.Interface;
 
-namespace DuneTransport.SocketConnectors
+namespace DuneNetworking.SocketConnectors
 {
     public class ClientConnector : IClient
     {
@@ -48,7 +50,7 @@ namespace DuneTransport.SocketConnectors
         /// <summary>
         ///     On Packet Received Event Handler.
         /// </summary>
-        public event Action<object, bool, Transport.Interface.ITransport?>? OnAttemptConnectResponseHandler;
+        public event Action<object, bool, ITransport?>? OnAttemptConnectResponseHandler;
 
         /// <summary>
         ///     On Packet Disconnect Event Handler.
@@ -74,12 +76,12 @@ namespace DuneTransport.SocketConnectors
         ///     Client Async Reconnection Attempt Callback.
         /// </summary>
         /// <param name="sender">The Session Socket</param>
-        /// <param name="connectEventArgs">Reconnection Event Args</param>
-        public void OnAttemptConnectResponse(object sender, SocketAsyncEventArgs connectEventArgs)
+        /// <param name="args">Reconnection Event Args</param>
+        public void OnAttemptConnectResponse(object sender, SocketAsyncEventArgs args)
         {
-            if (connectEventArgs.SocketError == SocketError.Success)
+            if (args.SocketError == SocketError.Success)
             {
-                OnAttemptConnectResponseHandler?.Invoke(sender, true, new Transport.Transport(connectEventArgs.ConnectSocket));
+                OnAttemptConnectResponseHandler?.Invoke(sender, true, new Transport(args.ConnectSocket));
             }
             else
             {
@@ -104,11 +106,11 @@ namespace DuneTransport.SocketConnectors
         /// <summary>
         ///     On Session Socket Disconnect Callback.
         /// </summary>
-        public void OnDisconnected(object sender, SocketAsyncEventArgs onDisconnected)
+        public void OnDisconnected(object sender, SocketAsyncEventArgs args)
         {
             socket.Close();
 
-            OnDisconnectedHandler?.Invoke(sender, onDisconnected);
+            OnDisconnectedHandler?.Invoke(sender, args);
         }
 
         #endregion

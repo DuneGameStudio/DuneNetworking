@@ -2,10 +2,11 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
-using DuneTransport.SocketConnectors.Interface;
+using DuneNetworking.SocketConnectors.Interface;
+using DuneTransport.Transport;
 using DuneTransport.Transport.Interface;
 
-namespace DuneTransport.SocketConnectors
+namespace DuneNetworking.SocketConnectors
 {
     public class ServerConnector : IServer
     {
@@ -45,7 +46,7 @@ namespace DuneTransport.SocketConnectors
         /// <summary>
         ///     The Event That Fires When a New Client Connects.
         /// </summary>
-        public event EventHandler<ITransport>? onNewClientConnection;
+        public event EventHandler<ITransport>? OnNewClientConnection;
 
         /// <summary>
         ///     Represents the server's IP endpoint, including the IP address and port number,
@@ -145,12 +146,12 @@ namespace DuneTransport.SocketConnectors
         /// <param name="newClientConnectionEventArgs"></param>
         private void OnNewConnection(object sender, SocketAsyncEventArgs newClientConnectionEventArgs)
         {
-            onNewClientConnection?.Invoke(sender, new Transport.Transport(onNewClientConnectionEventArgs.AcceptSocket));
-
-            onNewClientConnectionEventArgs.AcceptSocket = null;
-
             if (isAccepting)
             {
+                OnNewClientConnection?.Invoke(sender, new Transport(onNewClientConnectionEventArgs.AcceptSocket));
+
+                onNewClientConnectionEventArgs.AcceptSocket = null;
+
                 AcceptConnection();
             }
         }
@@ -169,14 +170,14 @@ namespace DuneTransport.SocketConnectors
         /// <summary>
         ///     Disposed State
         /// </summary>
-        private bool _disposedValue;
+        private bool disposedValue;
 
         /// <summary>
         ///     Releases all resources used by the current instance of the server connector class.
         /// </summary>
         protected virtual void Dispose(bool disposing)
         {
-            if (!_disposedValue)
+            if (!disposedValue)
             {
                 if (disposing)
                 {
@@ -184,7 +185,7 @@ namespace DuneTransport.SocketConnectors
                     socket.Dispose();
                     onNewClientConnectionEventArgs.Dispose();
                 }
-                _disposedValue = true;
+                disposedValue = true;
             }
         }
 

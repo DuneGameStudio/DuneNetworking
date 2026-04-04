@@ -1,4 +1,4 @@
-﻿namespace DuneTransport.Packets
+﻿namespace DuneNetworking.Packets
 {
     public enum PacketID
     {

@@ -101,8 +101,6 @@ namespace DuneTransport.Transport
                     {
                         PacketReceived(socket, receiveEventArgs);
                     }
-
-                    return;
                 }
             }
         }

@@ -3,7 +3,7 @@ using System.Net.Sockets;
 using DuneTransport.ByteArrayManager;
 using DuneTransport.Transport.Interface;
 
-namespace DuneTransport.Packets.Interface
+namespace DuneNetworking.Packets.Interface
 {
     public interface ISession
     {

@@ -2,7 +2,7 @@ using System;
 using System.Net.Sockets;
 using DuneTransport.Transport.Interface;
 
-namespace DuneTransport.SocketConnectors.Interface
+namespace DuneNetworking.SocketConnectors.Interface
 {
     public interface IClient : IDisposable
     {
