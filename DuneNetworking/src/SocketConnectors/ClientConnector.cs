@@ -2,151 +2,118 @@ using System;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 using DuneNetworking.SocketConnectors.Interface;
-using DuneTransport.Transport;
-using DuneTransport.Transport.Interface;
 
 namespace DuneNetworking.SocketConnectors
 {
     public class ClientConnector : IClient
     {
-        /// <summary>
-        ///     The Client Socket.
-        /// </summary>
-        private readonly Socket socket;
+        private readonly Socket _socket;
+        private readonly SocketAsyncEventArgs _connectEventArgs;
 
-        /// <summary>
-        ///     Socket Connection State This is the Same as the State Inside the Socket Itself.
-        /// </summary>
-        /// <value></value>
-        public bool IsConnected => socket.Connected;
+        // 0 = not connected, 1 = connected. Thread-safe one-time disconnect guard.
+        private int _connectedState;
 
-        /// <summary>
-        ///     Event Arguments For Sending Operations.
-        /// </summary>
-        private readonly SocketAsyncEventArgs connectEventArgs;
+        public bool IsConnected => _connectedState == 1;
 
-        /// <summary>
-        ///     Event Arguments For Disconnecting Operations.
-        /// </summary>
-        private readonly SocketAsyncEventArgs disconnectEventArgs;
+        public event Action<bool>? OnConnectResult;
+        public event Action? OnDisconnected;
 
-        /// <summary>
-        ///     Simple Construction Which Initializes the Socket and The Helper SocketAsyncEventArgs That's Needed.
-        /// </summary>
         public ClientConnector()
         {
-            socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            _socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
 
-            connectEventArgs = new SocketAsyncEventArgs();
-            disconnectEventArgs = new SocketAsyncEventArgs();
-            
-            connectEventArgs.Completed += OnAttemptConnectResponse;
-            disconnectEventArgs.Completed += OnDisconnected;
+            _connectEventArgs = new SocketAsyncEventArgs();
+            _connectEventArgs.Completed += OnConnectCompleted;
         }
 
-        #region IClient
-
-        /// <summary>
-        ///     On Packet Received Event Handler.
-        /// </summary>
-        public event Action<object, bool, ITransport?>? OnAttemptConnectResponseHandler;
-
-        /// <summary>
-        ///     On Packet Disconnect Event Handler.
-        /// </summary>
-        public event EventHandler<SocketAsyncEventArgs>? OnDisconnectedHandler;
-
-        /// <summary>
-        ///     Initiates an asynchronous attempt to connect to the specified server address and port.
-        /// </summary>
-        /// <param name="address">The IP address of the server to connect to.</param>
-        /// <param name="port">The port number to connect to on the server.</param>
-        public void AttemptConnectAsync(string address, int port)
+        public void ConnectAsync(string address, int port)
         {
-            connectEventArgs.RemoteEndPoint = new IPEndPoint(IPAddress.Parse(address), port);
+            _connectEventArgs.RemoteEndPoint = new IPEndPoint(IPAddress.Parse(address), port);
 
-            if (!socket.ConnectAsync(connectEventArgs))
+            try
             {
-                OnAttemptConnectResponse(socket, connectEventArgs);
+                if (!_socket.ConnectAsync(_connectEventArgs))
+                {
+                    ProcessConnect(_connectEventArgs);
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                // Socket already disposed during teardown
+            }
+            catch (SocketException ex)
+            {
+                Debug.WriteLine($"ConnectAsync | SocketException: {ex.Message}", "Error");
+                OnConnectResult?.Invoke(false);
             }
         }
 
-        /// <summary>
-        ///     Client Async Reconnection Attempt Callback.
-        /// </summary>
-        /// <param name="sender">The Session Socket</param>
-        /// <param name="args">Reconnection Event Args</param>
-        public void OnAttemptConnectResponse(object sender, SocketAsyncEventArgs args)
+        private void OnConnectCompleted(object? sender, SocketAsyncEventArgs e)
         {
-            if (args.SocketError == SocketError.Success)
+            ProcessConnect(e);
+        }
+
+        private void ProcessConnect(SocketAsyncEventArgs e)
+        {
+            if (e.SocketError == SocketError.Success)
             {
-                OnAttemptConnectResponseHandler?.Invoke(sender, true, new Transport(args.ConnectSocket));
+                Interlocked.Exchange(ref _connectedState, 1);
+                OnConnectResult?.Invoke(true);
             }
             else
             {
-                OnAttemptConnectResponseHandler?.Invoke(sender, false, null);
-                Debug.WriteLine("Session Try Connect Failed", "log");
+                Debug.WriteLine($"ProcessConnect | Connection failed: {e.SocketError}", "Error");
+                OnConnectResult?.Invoke(false);
             }
         }
 
-        /// <summary>
-        ///     Stop Receiving From Client and Disconnect The Socket None Permanently.
-        /// </summary>
         public void Disconnect()
         {
-            socket.Shutdown(SocketShutdown.Both);
-
-            if (!socket.DisconnectAsync(disconnectEventArgs))
+            if (Interlocked.Exchange(ref _connectedState, 0) == 1)
             {
-                OnDisconnected(socket, disconnectEventArgs);
+                try
+                {
+                    _socket.Shutdown(SocketShutdown.Both);
+                }
+                catch (Exception)
+                {
+                    // Ignore -- socket may already be dead.
+                }
+                finally
+                {
+                    _socket.Close();
+                    OnDisconnected?.Invoke();
+                }
             }
         }
 
-        /// <summary>
-        ///     On Session Socket Disconnect Callback.
-        /// </summary>
-        public void OnDisconnected(object sender, SocketAsyncEventArgs args)
-        {
-            socket.Close();
-
-            OnDisconnectedHandler?.Invoke(sender, args);
-        }
-
-        #endregion
-
         #region IDisposable
-        /// <summary>
-        ///     Disposed State
-        /// </summary>
-        private bool disposedValue;
 
-        /// <summary>
-        /// 
-        /// </summary>
-        /// <param name="disposing"></param>
+        private bool _disposedValue;
+
         protected virtual void Dispose(bool disposing)
         {
-            if (!disposedValue)
+            if (!_disposedValue)
             {
                 if (disposing)
                 {
-                    // Dispose Managed Resources
-                    socket.Dispose();
-                    connectEventArgs.Dispose();
-                    disconnectEventArgs.Dispose();
+                    Disconnect();
+
+                    _socket.Dispose();
+                    _connectEventArgs.Dispose();
                 }
-                disposedValue = true;
+                _disposedValue = true;
             }
         }
 
-        /// <summary>
-        ///     Closes the Server Socket and Disposes it.
-        /// </summary>
         public void Dispose()
         {
             Dispose(true);
+            GC.SuppressFinalize(this);
         }
+
         #endregion
     }
 }

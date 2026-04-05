@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -10,193 +11,179 @@ namespace DuneNetworking.SocketConnectors
 {
     public class ServerConnector : IServer
     {
-        /// <summary>
-        ///     The Server's Socket.
-        /// </summary>
-        private readonly Socket socket;
+        private readonly Socket _listenSocket;
+        private readonly SocketAsyncEventArgs _acceptEventArgs;
+        
+        // Thread-safe registry for active sessions. Using a boolean as a dummy value.
+        private readonly ConcurrentDictionary<ITransport, bool> _activeSessions;
+        
+        private bool _isListening;
+        
+        public bool IsListening => _isListening;
 
-        /// <summary>
-        ///     Server Connection Listening State.
-        /// </summary>
-        private bool isListening;
+        public int ActiveConnectionCount => _activeSessions.Count;
 
-        /// <summary>
-        ///     Server New Client Accepting State.
-        /// </summary>
-        private bool isAccepting;
+        public event Action<ITransport>? OnClientConnected;
 
-        /// <summary>
-        ///     Wrapper Class For The Event That Fires When a New Client Connects.
-        /// </summary>
-        private readonly SocketAsyncEventArgs onNewClientConnectionEventArgs;
-
-        /// <summary>
-        ///     Initializes The Server To Accept Connections Asynchronously.
-        /// </summary>
         public ServerConnector()
         {
-            socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            _listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            
+            _acceptEventArgs = new SocketAsyncEventArgs();
+            _acceptEventArgs.Completed += OnAcceptCompleted;
 
-            onNewClientConnectionEventArgs = new SocketAsyncEventArgs();
-
-            onNewClientConnectionEventArgs.Completed += OnNewConnection;
+            _activeSessions = new ConcurrentDictionary<ITransport, bool>();
         }
 
-        #region IServer
-        /// <summary>
-        ///     The Event That Fires When a New Client Connects.
-        /// </summary>
-        public event EventHandler<ITransport>? OnNewClientConnection;
-
-        /// <summary>
-        ///     Represents the server's IP endpoint, including the IP address and port number,
-        ///     used to bind the socket for network communication.
-        /// </summary>
-        private IPEndPoint? iPEndPoint;
-
-        /// <summary>
-        ///     Initializes the server by setting up the network endpoint and binding the server socket
-        ///     using the specified IP address and port number.
-        /// </summary>
-        /// <param name="address">The IP address for the server to bind to.</param>
-        /// <param name="port">The port number for the server to listen on.</param>
-        public void Initialize(string address, int port)
+        public void StartListening(string address, int port)
         {
-            iPEndPoint = new IPEndPoint(IPAddress.Parse(address), port);
-            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, 1);
-            socket.Bind(iPEndPoint);
-        }
-
-        /// <summary>
-        ///     Starts the server socket to listen for incoming connections.
-        ///     Ensures the listening state is set and prevents redundant invocations
-        ///     if the server is already in a listening state.
-        /// </summary>
-        public void StartListening()
-        {
-            if (!isListening)
+            if (_isListening)
             {
-                socket.Listen(-1);
-                isListening = true;
+                Debug.WriteLine("StartListening | Server is already running.", "Error");
+                return;
             }
-            else
+
+            try
             {
-                Debug.WriteLine("StartListenForConnections | Server Already Started.", "Error");
+                IPEndPoint endPoint = new IPEndPoint(IPAddress.Parse(address), port);
+                
+                _listenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, 1);
+                _listenSocket.Bind(endPoint);
+                _listenSocket.Listen((int)SocketOptionName.MaxConnections);
+                
+                _isListening = true;
+                
+                AcceptConnection();
+                
+                Debug.WriteLine($"Server started listening on {address}:{port}", "log");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"StartListening | Failed to start server: {ex.Message}", "Error");
+                _isListening = false;
             }
         }
 
-        /// <summary>
-        ///     If The Server is Running Listen For Incoming Connections.
-        /// </summary>
-        public void StopListening()
+        private void AcceptConnection()
         {
-            if (isListening)
-            {
-                socket.Listen(0);
-                socket.Shutdown(SocketShutdown.Both);
-                isListening = false;
-            }
-            else
-            {
-                Debug.WriteLine("StartListenForConnections | Server Has Already Stopped.", "Error");
-            }
-        }
+            if (!_isListening) return;
 
-        /// <summary>
-        ///     If The Server is Running Start Accepting Connection Requests Asynchronously Using SocketAsyncEventArgs.
-        /// </summary>
-        void AcceptConnection()
-        {
-            if (isListening)
+            _acceptEventArgs.AcceptSocket = null;
+
+            try
             {
-                if (!socket.AcceptAsync(onNewClientConnectionEventArgs))
+                if (!_listenSocket.AcceptAsync(_acceptEventArgs))
                 {
-                    OnNewConnection(socket, onNewClientConnectionEventArgs);
+                    ProcessAccept(_acceptEventArgs);
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                // Normal during teardown
+            }
+            catch (SocketException ex)
+            {
+                Debug.WriteLine($"AcceptConnection | SocketException: {ex.Message}", "Error");
+            }
+        }
+
+        private void OnAcceptCompleted(object? sender, SocketAsyncEventArgs e)
+        {
+            ProcessAccept(e);
+        }
+
+        private void ProcessAccept(SocketAsyncEventArgs e)
+        {
+            if (!_isListening) return;
+            
+            if (e.SocketError == SocketError.Success && e.AcceptSocket != null)
+            {
+                ITransport newSession = new Transport(e.AcceptSocket);
+                
+                // Track the session and hook into its lifecycle
+                if (_activeSessions.TryAdd(newSession, true))
+                {
+                    newSession.EventArgsOnDisconnected += HandleSessionDisconnected;
+                    OnClientConnected?.Invoke(newSession);
                 }
             }
             else
             {
-                Debug.WriteLine("StartAcceptingConnections | Server is Not Listening.", "Error");
-                StopAcceptingConnections();
+                Debug.WriteLine($"ProcessAccept | Accept failed: {e.SocketError}", "Error");
             }
-        }
 
-        /// <summary>
-        ///     Enables the server to begin accepting client connection requests asynchronously.
-        ///     This sets the accepting state to active and triggers the handling of incoming connections.
-        /// </summary>
-        public void StartAcceptingConnections()
-        {
-            isAccepting = true;
             AcceptConnection();
         }
 
-        /// <summary>
-        ///     Stops accepting any new connections
-        /// </summary>
-        public void StopAcceptingConnections()
+        private void HandleSessionDisconnected(object? sender, EventArgs e)
         {
-            isAccepting = false;
-        }
-
-        /// <summary>
-        ///     On New Client Connection Accepted.
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="newClientConnectionEventArgs"></param>
-        private void OnNewConnection(object sender, SocketAsyncEventArgs newClientConnectionEventArgs)
-        {
-            if (isAccepting)
+            if (sender is ITransport disconnectedSession)
             {
-                OnNewClientConnection?.Invoke(sender, new Transport(onNewClientConnectionEventArgs.AcceptSocket));
-
-                onNewClientConnectionEventArgs.AcceptSocket = null;
-
-                AcceptConnection();
+                // Unhook the event to prevent memory leaks
+                disconnectedSession.EventArgsOnDisconnected -= HandleSessionDisconnected;
+                
+                // Remove from registry
+                _activeSessions.TryRemove(disconnectedSession, out _);
             }
         }
 
-        /// <summary>
-        ///     Shuts down the server and closes the socket.
-        /// </summary>
+        public void StopListening()
+        {
+            if (!_isListening) return;
+
+            _isListening = false;
+
+            try
+            {
+                _listenSocket.Close();
+                Debug.WriteLine("Server stopped listening for new connections.", "log");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"StopListening | Error during shutdown: {ex.Message}", "Error");
+            }
+        }
+
         public void StopServer()
         {
-            socket.Shutdown(SocketShutdown.Both); // Stops sending and receiving.  
-            socket.Close();
+            // 1. Stop accepting new connections
+            StopListening();
+
+            // 2. Terminate all active sessions
+            foreach (var session in _activeSessions.Keys)
+            {
+                session.DisconnectAsync();
+            }
+            
+            _activeSessions.Clear();
+            Debug.WriteLine("Server completely stopped. All active sessions terminated.", "log");
         }
-        #endregion
 
         #region IDisposable
-        /// <summary>
-        ///     Disposed State
-        /// </summary>
-        private bool disposedValue;
+        
+        private bool _disposedValue;
 
-        /// <summary>
-        ///     Releases all resources used by the current instance of the server connector class.
-        /// </summary>
         protected virtual void Dispose(bool disposing)
         {
-            if (!disposedValue)
+            if (!_disposedValue)
             {
                 if (disposing)
                 {
-                    // Dispose managed resources
-                    socket.Dispose();
-                    onNewClientConnectionEventArgs.Dispose();
+                    StopServer();
+                    
+                    _listenSocket.Dispose();
+                    _acceptEventArgs.Dispose();
                 }
-                disposedValue = true;
+                _disposedValue = true;
             }
         }
 
-        /// <summary>
-        ///     Closes the Server Socket and Disposes it.
-        /// </summary>
         public void Dispose()
         {
             Dispose(true);
             GC.SuppressFinalize(this);
         }
+        
         #endregion
     }
 }

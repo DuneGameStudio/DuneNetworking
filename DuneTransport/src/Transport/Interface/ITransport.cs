@@ -4,15 +4,18 @@ using DuneTransport.ByteArrayManager;
 
 namespace DuneTransport.Transport.Interface
 {
-    public interface ITransport : ITransportConnector, IDisposable
+    public interface ITransport : IDisposable
     {
-        public Socket socket { get; set; }
-        SegmentedBuffer receiveBuffer { get; set; }
-        SegmentedBuffer sendBuffer { get; set; }
-        event EventHandler<SocketAsyncEventArgs> OnPacketSentEventHandler;
-        event Action<object, SocketAsyncEventArgs, Segment> OnPacketReceived;
+        bool IsConnected { get; }
+        SegmentedBuffer receiveBuffer { get; }
+        SegmentedBuffer sendBuffer { get; }
+
+        event EventHandler<SocketAsyncEventArgs> OnPacketSent;
+        event Action<ITransport, SocketAsyncEventArgs, Segment> OnPacketReceived;
+        event EventHandler EventArgsOnDisconnected; // Notifies the Networking layer to trigger reconnects
 
         void ReceiveAsync(int bufferSize = 2);
         void SendAsync(Memory<byte> memory);
+        void DisconnectAsync();
     }
 }
