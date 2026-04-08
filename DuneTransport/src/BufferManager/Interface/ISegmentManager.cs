@@ -26,7 +26,11 @@ namespace DuneTransport.BufferManager.Interface
             
             segment = newSegment;
             
-            return OnSerialize();
+            if (OnSerialize())
+                return true;
+
+            segment.Release();
+            return false;
         }
         
         bool Deserialize()
