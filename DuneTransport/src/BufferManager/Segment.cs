@@ -7,8 +7,6 @@ namespace DuneTransport.BufferManager
         public int SegmentIndex { get; set; }
 
         public Memory<byte> Memory { get; set; }
-
-        public int PacketSize { get; set; }
         
         public Action<int> ReleaseMemoryCallback { get; set; }
 

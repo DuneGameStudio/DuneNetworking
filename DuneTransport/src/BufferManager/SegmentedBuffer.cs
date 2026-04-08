@@ -25,12 +25,9 @@ namespace DuneTransport.BufferManager
             freeUpTo = segmentCount;
         }
         
-        public bool TryReserveSegment(out Segment segment, int size = 0)
+        public bool TryReserveSegment(out Segment segment)
         {
             segment = new Segment();
-
-            if (size < 0)
-                return false;
 
             if (freeFrom == 0)
                 return false;
@@ -38,16 +35,7 @@ namespace DuneTransport.BufferManager
             int segmentStart = (freeFrom - 1) * segmentSize;
             segment.SegmentIndex = freeFrom;
             segment.ReleaseMemoryCallback = ReleaseMemory;
-
-            if (size == 0)
-            {
-                segment.Memory = data.AsMemory(segmentStart + 2, segmentSize - 2);
-            }
-            else
-            {
-                if (size > segmentSize) size = segmentSize;
-                segment.Memory = data.AsMemory(segmentStart, size);
-            }
+            segment.Memory = data.AsMemory(segmentStart, segmentSize);
 
             if (freeFrom == freeUpTo)
                 freeFrom = 0;
@@ -76,16 +64,10 @@ namespace DuneTransport.BufferManager
             if (segmentNumber < 1 || segmentNumber > segmentCount)
                 return false;
 
-            if (length < 0)
+            if (length < 0 || length > segmentSize)
                 return false;
 
             int start = (segmentNumber - 1) * segmentSize;
-            length += 2;
-            int total = start + length;
-
-            if (length > segmentSize || total > data.Length)
-                return false;
-
             registeredMemory = data.AsMemory(start, length);
             return true;
         }

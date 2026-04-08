@@ -10,28 +10,32 @@ namespace DuneTransport.BufferManager.Interface
         
         public int PacketSize { get; set; }
         
-        void OnDeserialize();
+        bool OnDeserialize();
         
-        void OnSerialize();
+        bool OnSerialize();
         
         void OnSend(ITransport transport)
         {
             transport.SendAsync(segment, PacketSize);
         }
         
-        void Serialize(SegmentedBuffer segmentedBuffer)
+        bool Serialize(ITransport transport)
         {
-            if (segmentedBuffer.TryReserveSegment(out Segment newSegment))
-            {
-                segment = newSegment;
-                OnSerialize();
-            }
+            if (!transport.TryReserveSendPacket(out Segment newSegment)) 
+                return false;
+            
+            segment = newSegment;
+            
+            return OnSerialize();
         }
         
-        void Deserialize()
+        bool Deserialize()
         {
-            OnDeserialize();
+            if (!OnDeserialize()) 
+                return false;
+            
             segment.Release();
+            return true;
         }
     }
 }

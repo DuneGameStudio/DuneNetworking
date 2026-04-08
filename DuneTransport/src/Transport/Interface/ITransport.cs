@@ -18,5 +18,6 @@ namespace DuneTransport.Transport.Interface
 
         void ReceiveAsync(int bufferSize = 2);
         void SendAsync(Segment packet, int packetSize);
+        bool TryReserveSendPacket(out Segment segment);
     }
 }

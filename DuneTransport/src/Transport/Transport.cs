@@ -8,6 +8,8 @@ namespace DuneTransport.Transport
 {
     public class Transport : ITransport
     {
+        private const int HeaderSize = 2;
+
         private readonly Socket socket;
 
         public SegmentedBuffer receiveBuffer { get; }
@@ -43,14 +45,14 @@ namespace DuneTransport.Transport
             receiveEventArgs.Completed += OnPacketReceivedEventHandler;
         }
 
-        public void ReceiveAsync(int bufferSize = 2)
+        public void ReceiveAsync(int bufferSize = HeaderSize)
         {
             if (!IsConnected) return;
 
-            if (receiveBuffer.TryReserveSegment(out Segment newSegment, bufferSize))
+            if (receiveBuffer.TryReserveSegment(out Segment newSegment))
             {
                 currentReceivingSegment = newSegment;
-                receiveEventArgs.SetBuffer(newSegment.Memory);
+                receiveEventArgs.SetBuffer(newSegment.Memory.Slice(0, bufferSize));
 
                 try
                 {
@@ -84,18 +86,21 @@ namespace DuneTransport.Transport
 
         private void ProcessReceive(SocketAsyncEventArgs onReceived)
         {
-            if (onReceived.SocketError != SocketError.Success || onReceived.BytesTransferred == 0)
+            if (onReceived.SocketError != SocketError.Success)
             {
-                // BytesTransferred == 0 means the remote endpoint gracefully closed the connection.
-                Debug.WriteLine("Connection dropped or zero bytes received.", "log");
+                OnPacketReceiveFailed?.Invoke(this);
+                return;
+            }
+
+            if (onReceived.BytesTransferred == 0)
+            {
                 OnDisconnectRequested?.Invoke();
                 return;
             }
 
             switch (onReceived.BytesTransferred)
             {
-                case 2:
-                    // We received the header. The header contains the length of the upcoming payload.
+                case HeaderSize:
                     ushort payloadLength = BitConverter.ToUInt16(onReceived.MemoryBuffer.Span);
 
                     currentReceivingSegment.Release();
@@ -103,10 +108,18 @@ namespace DuneTransport.Transport
                     ReceiveAsync(payloadLength);
                     return;
                 default:
-                    // We received the payload.
                     OnPacketReceived?.Invoke(this, onReceived, currentReceivingSegment);
                     return;
             }
+        }
+
+        public bool TryReserveSendPacket(out Segment segment)
+        {
+            if (!sendBuffer.TryReserveSegment(out segment))
+                return false;
+
+            segment.Memory = segment.Memory.Slice(HeaderSize);
+            return true;
         }
 
         public void SendAsync(Segment packet, int packetSize)
@@ -117,13 +130,13 @@ namespace DuneTransport.Transport
                 return;
             }
 
-            if (!sendBuffer.GetRegisteredMemory(packet.SegmentIndex, packetSize, out Memory<byte> memory))
+            if (!sendBuffer.GetRegisteredMemory(packet.SegmentIndex, packetSize + HeaderSize, out Memory<byte> memory))
             {
                 OnPacketSendFailed?.Invoke(this, currentSendingSegment);
                 return;
             }
 
-            BitConverter.TryWriteBytes(memory.Span, (ushort)(memory.Length - 2));
+            BitConverter.TryWriteBytes(memory.Span, (ushort)packetSize);
 
             sendEventArgs.SetBuffer(memory);
 
