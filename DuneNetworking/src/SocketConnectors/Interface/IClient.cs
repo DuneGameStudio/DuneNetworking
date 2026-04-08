@@ -1,5 +1,5 @@
 using System;
-using DuneTransport.Transport.Interface;
+using System.Net.Sockets;
 
 namespace DuneNetworking.SocketConnectors.Interface
 {
@@ -7,10 +7,9 @@ namespace DuneNetworking.SocketConnectors.Interface
     {
         bool IsConnected { get; }
 
-        event Action<bool>? OnConnectResult;
-        event Action? OnDisconnected;
+        event Action<IConnection>? OnConnected;
+        event Action<SocketError>? OnConnectFailed;
 
-        void ConnectAsync(string address, int port);
-        void Disconnect();
+        bool ConnectAsync(string address, int port);
     }
 }

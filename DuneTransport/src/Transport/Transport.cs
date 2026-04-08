@@ -1,77 +1,79 @@
 using System;
 using System.Diagnostics;
 using System.Net.Sockets;
-using System.Threading;
-using DuneTransport.ByteArrayManager;
+using DuneTransport.BufferManager;
 using DuneTransport.Transport.Interface;
 
 namespace DuneTransport.Transport
 {
     public class Transport : ITransport
     {
-        private readonly Socket _socket;
-        
+        private readonly Socket socket;
+
         public SegmentedBuffer receiveBuffer { get; }
         public SegmentedBuffer sendBuffer { get; }
-        
-        private Segment _currentReceivingSegment;
-        
-        private readonly SocketAsyncEventArgs _sendEventArgs;
-        private readonly SocketAsyncEventArgs _receiveEventArgs;
 
-        // 0 = disconnected, 1 = connected. Used to ensure thread-safe teardown.
-        private int _connectedState = 1; 
-        
-        public bool IsConnected => _connectedState == 1;
+        private Segment currentReceivingSegment;
+        private Segment currentSendingSegment;
+
+        private readonly SocketAsyncEventArgs sendEventArgs;
+        private readonly SocketAsyncEventArgs receiveEventArgs;
+
+        public bool IsConnected { get; set; } = true;
 
         public event EventHandler<SocketAsyncEventArgs>? OnPacketSent;
+        public event EventHandler<Segment>? OnPacketSendFailed;
+
         public event Action<ITransport, SocketAsyncEventArgs, Segment>? OnPacketReceived;
-        public event EventHandler? EventArgsOnDisconnected;
+        public event Action<ITransport>? OnPacketReceiveFailed;
+
+        public event Action? OnDisconnectRequested;
 
         public Transport(Socket socket)
         {
-            _socket = socket ?? throw new ArgumentNullException(nameof(socket));
+            this.socket = socket ?? throw new ArgumentNullException(nameof(socket));
 
             sendBuffer = new SegmentedBuffer();
             receiveBuffer = new SegmentedBuffer();
             
-            _sendEventArgs = new SocketAsyncEventArgs();
-            _receiveEventArgs = new SocketAsyncEventArgs();
+            sendEventArgs = new SocketAsyncEventArgs();
+            receiveEventArgs = new SocketAsyncEventArgs();
 
-            _sendEventArgs.Completed += OnPacketSentEventHandler;
-            _receiveEventArgs.Completed += OnPacketReceivedEventHandler;
+            sendEventArgs.Completed += OnPacketSentEventHandler;
+            receiveEventArgs.Completed += OnPacketReceivedEventHandler;
         }
 
         public void ReceiveAsync(int bufferSize = 2)
         {
             if (!IsConnected) return;
 
-            if (receiveBuffer.ReserveMemory(out Segment newSegment, bufferSize))
+            if (receiveBuffer.TryReserveSegment(out Segment newSegment, bufferSize))
             {
-                _currentReceivingSegment = newSegment;
-                _receiveEventArgs.SetBuffer(newSegment.Memory);
+                currentReceivingSegment = newSegment;
+                receiveEventArgs.SetBuffer(newSegment.Memory);
 
                 try
                 {
-                    if (!_socket.ReceiveAsync(_receiveEventArgs))
+                    if (!socket.ReceiveAsync(receiveEventArgs))
                     {
-                        ProcessReceive(_receiveEventArgs);
+                        ProcessReceive(receiveEventArgs);
                     }
                 }
                 catch (ObjectDisposedException)
                 {
-                    DisconnectAsync();
+                    Debug.WriteLine("ObjectDisposedException");
+                    OnPacketReceiveFailed?.Invoke(this);
                 }
                 catch (SocketException ex)
                 {
                     Debug.WriteLine($"ReceiveAsync | SocketException: {ex.Message}", "error");
-                    DisconnectAsync();
+                    OnPacketReceiveFailed?.Invoke(this);
                 }
             }
             else
             {
                 Debug.WriteLine("ReceiveAsync | Failed to reserve memory.", "error");
-                DisconnectAsync(); // If memory fails, the pipeline is broken.
+                OnPacketReceiveFailed?.Invoke(this);
             }
         }
 
@@ -86,7 +88,7 @@ namespace DuneTransport.Transport
             {
                 // BytesTransferred == 0 means the remote endpoint gracefully closed the connection.
                 Debug.WriteLine("Connection dropped or zero bytes received.", "log");
-                DisconnectAsync();
+                OnDisconnectRequested?.Invoke();
                 return;
             }
 
@@ -96,18 +98,18 @@ namespace DuneTransport.Transport
                     // We received the header. The header contains the length of the upcoming payload.
                     ushort payloadLength = BitConverter.ToUInt16(onReceived.MemoryBuffer.Span);
 
-                    _currentReceivingSegment.Release();
+                    currentReceivingSegment.Release();
 
                     ReceiveAsync(payloadLength);
                     return;
                 default:
                     // We received the payload.
-                    OnPacketReceived?.Invoke(this, onReceived, _currentReceivingSegment);
+                    OnPacketReceived?.Invoke(this, onReceived, currentReceivingSegment);
                     return;
             }
         }
 
-        public void SendAsync(Memory<byte> memory)
+        public void SendAsync(Segment packet, int packetSize)
         {
             if (!IsConnected)
             {
@@ -115,26 +117,33 @@ namespace DuneTransport.Transport
                 return;
             }
 
-            // Write the 2-byte length prefix into the start of the payload.
+            if (!sendBuffer.GetRegisteredMemory(packet.SegmentIndex, packetSize, out Memory<byte> memory))
+            {
+                OnPacketSendFailed?.Invoke(this, currentSendingSegment);
+                return;
+            }
+
             BitConverter.TryWriteBytes(memory.Span, (ushort)(memory.Length - 2));
 
-            _sendEventArgs.SetBuffer(memory);
+            sendEventArgs.SetBuffer(memory);
 
             try
             {
-                if (!_socket.SendAsync(_sendEventArgs))
+                currentSendingSegment = packet;
+                if (!socket.SendAsync(sendEventArgs))
                 {
-                    ProcessSend(_sendEventArgs);
+                    ProcessSend(sendEventArgs);
                 }
             }
             catch (ObjectDisposedException)
             {
-                DisconnectAsync();
+                Debug.WriteLine("ObjectDisposedException");
+                OnPacketSendFailed?.Invoke(this, currentSendingSegment);
             }
             catch (SocketException ex)
             {
                 Debug.WriteLine($"SendAsync | SocketException: {ex.Message}", "error");
-                DisconnectAsync();
+                OnPacketSendFailed?.Invoke(this, currentSendingSegment);
             }
         }
 
@@ -147,57 +156,33 @@ namespace DuneTransport.Transport
         {
             if (onSent.SocketError != SocketError.Success)
             {
-                DisconnectAsync();
+                OnPacketSendFailed?.Invoke(this, currentSendingSegment);
                 return;
             }
 
+            currentSendingSegment.Release();
             OnPacketSent?.Invoke(this, onSent);
         }
 
-        public void DisconnectAsync()
-        {
-            // Interlocked ensures this teardown sequence executes exactly once, 
-            // even if called concurrently by the user and a failed receive loop.
-            if (Interlocked.Exchange(ref _connectedState, 0) == 1)
-            {
-                try
-                {
-                    // Shutdown flushes pending operations gracefully.
-                    _socket.Shutdown(SocketShutdown.Both);
-                }
-                catch (Exception)
-                {
-                    // Ignore exceptions during shutdown; the socket may already be dead.
-                }
-                finally
-                {
-                    _socket.Close();
-                    
-                    // Notify upper layers to begin teardown or auto-reconnect.
-                    EventArgsOnDisconnected?.Invoke(this, EventArgs.Empty);
-                }
-            }
-        }
-
         #region IDisposable
-        
-        private bool _disposedValue;
+
+        private bool disposedValue;
 
         protected virtual void Dispose(bool disposing)
         {
-            if (!_disposedValue)
+            if (!disposedValue)
             {
                 if (disposing)
                 {
-                    Debug.WriteLine("Disposing Transport", "log");
+                    sendEventArgs.Completed -= OnPacketSentEventHandler;
+                    receiveEventArgs.Completed -= OnPacketReceivedEventHandler;
                     
-                    DisconnectAsync(); // Ensure socket is closed
-
-                    _socket.Dispose();
-                    _sendEventArgs.Dispose();
-                    _receiveEventArgs.Dispose();
+                    sendEventArgs.Dispose();
+                    receiveEventArgs.Dispose();
+                    
+                    socket.Dispose();
                 }
-                _disposedValue = true;
+                disposedValue = true;
             }
         }
 
@@ -206,7 +191,7 @@ namespace DuneTransport.Transport
             Dispose(true);
             GC.SuppressFinalize(this);
         }
-        
+
         #endregion
     }
 }

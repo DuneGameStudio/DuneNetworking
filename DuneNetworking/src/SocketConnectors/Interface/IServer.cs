@@ -1,24 +1,17 @@
 using System;
-using System.Collections.Generic;
-using DuneTransport.Transport.Interface;
+using System.Net.Sockets;
 
 namespace DuneNetworking.SocketConnectors.Interface
 {
     public interface IServer : IDisposable
     {
         bool IsListening { get; }
-        
-        // Expose the count or the active sessions if the app layer needs to query them.
-        int ActiveConnectionCount { get; }
-        
-        event Action<ITransport>? OnClientConnected;
-        
+
+        event Action<IConnection>? OnClientConnected;
+        event Action<SocketError>? OnAcceptFailed;
+
         void StartListening(string address, int port);
-        
-        // Halts new connections, keeps existing clients alive.
+        void AcceptConnection();
         void StopListening();
-        
-        // Halts new connections and forcefully disconnects all active clients.
-        void StopServer();
     }
 }

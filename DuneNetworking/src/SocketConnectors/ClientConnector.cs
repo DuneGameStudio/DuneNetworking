@@ -9,44 +9,49 @@ namespace DuneNetworking.SocketConnectors
 {
     public class ClientConnector : IClient
     {
-        private readonly Socket _socket;
-        private readonly SocketAsyncEventArgs _connectEventArgs;
+        private Socket? socket;
+        private readonly SocketAsyncEventArgs connectEventArgs;
+        private IConnection? connection;
+        private volatile int connectingState;
 
-        // 0 = not connected, 1 = connected. Thread-safe one-time disconnect guard.
-        private int _connectedState;
+        public bool IsConnected => connection?.IsConnected ?? false;
 
-        public bool IsConnected => _connectedState == 1;
-
-        public event Action<bool>? OnConnectResult;
-        public event Action? OnDisconnected;
+        public event Action<IConnection>? OnConnected;
+        public event Action<SocketError>? OnConnectFailed;
 
         public ClientConnector()
         {
-            _socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-
-            _connectEventArgs = new SocketAsyncEventArgs();
-            _connectEventArgs.Completed += OnConnectCompleted;
+            connectEventArgs = new SocketAsyncEventArgs();
+            connectEventArgs.Completed += OnConnectCompleted;
         }
 
-        public void ConnectAsync(string address, int port)
+        public bool ConnectAsync(string address, int port)
         {
-            _connectEventArgs.RemoteEndPoint = new IPEndPoint(IPAddress.Parse(address), port);
+            if (IsConnected)
+                return false;
+            
+            if (Interlocked.Exchange(ref connectingState, 1) != 0)
+                return false;
 
             try
             {
-                if (!_socket.ConnectAsync(_connectEventArgs))
-                {
-                    ProcessConnect(_connectEventArgs);
-                }
+                socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                
+                connectEventArgs.RemoteEndPoint = new IPEndPoint(IPAddress.Parse(address), port);
+                
+                if (!socket.ConnectAsync(connectEventArgs))
+                    ProcessConnect(connectEventArgs);
+                
+                return true;
             }
-            catch (ObjectDisposedException)
+            catch (Exception e)
             {
-                // Socket already disposed during teardown
-            }
-            catch (SocketException ex)
-            {
-                Debug.WriteLine($"ConnectAsync | SocketException: {ex.Message}", "Error");
-                OnConnectResult?.Invoke(false);
+                Debug.WriteLine($"ConnectAsync Exception {e}");
+                
+                socket?.Dispose();
+                Interlocked.Exchange(ref connectingState, 0);
+                
+                return false;
             }
         }
 
@@ -57,54 +62,38 @@ namespace DuneNetworking.SocketConnectors
 
         private void ProcessConnect(SocketAsyncEventArgs e)
         {
+            if (Interlocked.Exchange(ref connectingState, 0) != 1)
+                return;
+
             if (e.SocketError == SocketError.Success)
             {
-                Interlocked.Exchange(ref _connectedState, 1);
-                OnConnectResult?.Invoke(true);
+                connection = new Connection(e.ConnectSocket);
+                OnConnected?.Invoke(connection);
             }
             else
             {
-                Debug.WriteLine($"ProcessConnect | Connection failed: {e.SocketError}", "Error");
-                OnConnectResult?.Invoke(false);
-            }
-        }
-
-        public void Disconnect()
-        {
-            if (Interlocked.Exchange(ref _connectedState, 0) == 1)
-            {
-                try
-                {
-                    _socket.Shutdown(SocketShutdown.Both);
-                }
-                catch (Exception)
-                {
-                    // Ignore -- socket may already be dead.
-                }
-                finally
-                {
-                    _socket.Close();
-                    OnDisconnected?.Invoke();
-                }
+                socket?.Dispose();
+                OnConnectFailed?.Invoke(e.SocketError);
             }
         }
 
         #region IDisposable
 
-        private bool _disposedValue;
+        private bool disposedValue;
 
         protected virtual void Dispose(bool disposing)
         {
-            if (!_disposedValue)
+            if (!disposedValue)
             {
                 if (disposing)
                 {
-                    Disconnect();
-
-                    _socket.Dispose();
-                    _connectEventArgs.Dispose();
+                    connectEventArgs.Completed -= OnConnectCompleted;
+                    
+                    connectEventArgs.Dispose();
+                    connection?.Dispose();
+                    socket?.Dispose();
                 }
-                _disposedValue = true;
+                disposedValue = true;
             }
         }
 
