@@ -1,60 +1,57 @@
 using System;
+using System.Collections.Generic;
 
 namespace DuneTransport.BufferManager
 {
     public class SegmentedBuffer
     {
-        byte[] data;
+        readonly byte[] data;
 
         readonly int segmentSize;
-        
-        readonly int segmentCount;
-        
-        int freeFrom;
 
-        int freeUpTo;
+        readonly int segmentCount;
+
+        readonly Queue<int> freeSegments;
+
+        readonly bool[] isAllocated;
 
         public SegmentedBuffer(int arrayLength = 8192, int segmentCount = 32)
         {
-            segmentSize = arrayLength/segmentCount;
-            this.segmentCount  = segmentCount;
+            segmentSize = arrayLength / segmentCount;
+            this.segmentCount = segmentCount;
 
             data = new byte[arrayLength];
 
-            freeFrom = 1;
-            freeUpTo = segmentCount;
+            freeSegments = new Queue<int>(segmentCount);
+            isAllocated = new bool[segmentCount + 1];
+
+            for (int i = 1; i <= segmentCount; i++)
+                freeSegments.Enqueue(i);
         }
-        
+
         public bool TryReserveSegment(out Segment segment)
         {
             segment = new Segment();
 
-            if (freeFrom == 0)
+            if (!freeSegments.TryDequeue(out int segmentIndex))
                 return false;
 
-            int segmentStart = (freeFrom - 1) * segmentSize;
-            segment.SegmentIndex = freeFrom;
+            isAllocated[segmentIndex] = true;
+
+            int segmentStart = (segmentIndex - 1) * segmentSize;
+            segment.SegmentIndex = segmentIndex;
             segment.ReleaseMemoryCallback = ReleaseMemory;
             segment.Memory = data.AsMemory(segmentStart, segmentSize);
-
-            if (freeFrom == freeUpTo)
-                freeFrom = 0;
-            else if (freeFrom == segmentCount)
-                freeFrom = 1;
-            else
-                freeFrom++;
-
             return true;
         }
 
         public void ReleaseMemory(int segmentNumber)
         {
-            freeUpTo = segmentNumber;
+            if (!isAllocated[segmentNumber])
+                throw new InvalidOperationException($"Segment {segmentNumber} is not allocated.");
 
-            if (freeFrom == 0)
-            {
-                freeFrom = segmentNumber;
-            }
+            isAllocated[segmentNumber] = false;
+            freeSegments.Enqueue(segmentNumber);
         }
 
         public bool GetRegisteredMemory(int segmentNumber, int length, out Memory<byte> registeredMemory)
