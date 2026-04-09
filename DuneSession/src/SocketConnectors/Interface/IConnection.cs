@@ -1,7 +1,7 @@
 using System;
 using DuneTransport.Transport.Interface;
 
-namespace DuneNetworking.SocketConnectors.Interface
+namespace DuneSession.SocketConnectors.Interface
 {
     public interface IConnection : IDisposable
     {

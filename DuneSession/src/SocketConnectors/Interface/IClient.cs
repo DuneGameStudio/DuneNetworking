@@ -1,7 +1,7 @@
 using System;
 using System.Net.Sockets;
 
-namespace DuneNetworking.SocketConnectors.Interface
+namespace DuneSession.SocketConnectors.Interface
 {
     public interface IClient : IDisposable
     {

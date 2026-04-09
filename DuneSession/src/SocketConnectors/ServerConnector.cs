@@ -3,9 +3,9 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
-using DuneNetworking.SocketConnectors.Interface;
+using DuneSession.SocketConnectors.Interface;
 
-namespace DuneNetworking.SocketConnectors
+namespace DuneSession.SocketConnectors
 {
     public class ServerConnector : IServer
     {

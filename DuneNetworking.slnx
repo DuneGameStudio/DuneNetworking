@@ -1,4 +1,4 @@
 ﻿<Solution>
-	<Project Path="DuneNetworking/DuneNetworking.csproj" />
+	<Project Path="DuneSession\DuneSession.csproj" />
 	<Project Path="DuneTransport\DuneTransport.csproj" />
 </Solution>

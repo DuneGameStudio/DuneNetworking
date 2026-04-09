@@ -2,10 +2,10 @@ using System;
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Threading;
-using DuneNetworking.SocketConnectors.Interface;
+using DuneSession.SocketConnectors.Interface;
 using DuneTransport.Transport.Interface;
 
-namespace DuneNetworking.SocketConnectors
+namespace DuneSession.SocketConnectors
 {
     public class Connection : IConnection
     {
