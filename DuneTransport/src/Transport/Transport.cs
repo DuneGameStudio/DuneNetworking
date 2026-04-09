@@ -15,8 +15,14 @@ namespace DuneTransport.Transport
         public SegmentedBuffer receiveBuffer { get; }
         public SegmentedBuffer sendBuffer { get; }
 
+        private enum ReceivePhase { Header, Payload }
+
         private Segment currentReceivingSegment;
         private Segment currentSendingSegment;
+
+        private ReceivePhase phase;
+        private int receivedBytes;
+        private int expectedBytes;
 
         private readonly SocketAsyncEventArgs sendEventArgs;
         private readonly SocketAsyncEventArgs receiveEventArgs;
@@ -45,36 +51,45 @@ namespace DuneTransport.Transport
             receiveEventArgs.Completed += OnPacketReceivedEventHandler;
         }
 
-        public void ReceiveAsync(int bufferSize = HeaderSize)
+        public void ReceiveAsync()
         {
             if (!IsConnected) return;
 
-            if (receiveBuffer.TryReserveSegment(out Segment newSegment))
-            {
-                currentReceivingSegment = newSegment;
-                receiveEventArgs.SetBuffer(newSegment.Memory.Slice(0, bufferSize));
-
-                try
-                {
-                    if (!socket.ReceiveAsync(receiveEventArgs))
-                    {
-                        ProcessReceive(receiveEventArgs);
-                    }
-                }
-                catch (ObjectDisposedException)
-                {
-                    Debug.WriteLine("ObjectDisposedException");
-                    OnPacketReceiveFailed?.Invoke(this);
-                }
-                catch (SocketException ex)
-                {
-                    Debug.WriteLine($"ReceiveAsync | SocketException: {ex.Message}", "error");
-                    OnPacketReceiveFailed?.Invoke(this);
-                }
-            }
-            else
+            if (!receiveBuffer.TryReserveSegment(out Segment newSegment))
             {
                 Debug.WriteLine("ReceiveAsync | Failed to reserve memory.", "error");
+                OnPacketReceiveFailed?.Invoke(this);
+                return;
+            }
+
+            currentReceivingSegment = newSegment;
+            phase = ReceivePhase.Header;
+            expectedBytes = HeaderSize;
+            receivedBytes = 0;
+
+            IssueReceive();
+        }
+
+        private void IssueReceive()
+        {
+            receiveEventArgs.SetBuffer(
+                currentReceivingSegment.Memory.Slice(receivedBytes, expectedBytes - receivedBytes));
+
+            try
+            {
+                if (!socket.ReceiveAsync(receiveEventArgs))
+                {
+                    ProcessReceive(receiveEventArgs);
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                Debug.WriteLine("ObjectDisposedException");
+                OnPacketReceiveFailed?.Invoke(this);
+            }
+            catch (SocketException ex)
+            {
+                Debug.WriteLine($"IssueReceive | SocketException: {ex.Message}", "error");
                 OnPacketReceiveFailed?.Invoke(this);
             }
         }
@@ -98,18 +113,44 @@ namespace DuneTransport.Transport
                 return;
             }
 
-            switch (onReceived.BytesTransferred)
+            receivedBytes += onReceived.BytesTransferred;
+
+            if (receivedBytes < expectedBytes)
             {
-                case HeaderSize:
-                    ushort payloadLength = BitConverter.ToUInt16(onReceived.MemoryBuffer.Span);
+                IssueReceive();
+                return;
+            }
 
-                    currentReceivingSegment.Release();
+            if (phase == ReceivePhase.Header)
+            {
+                ushort payloadLength = BitConverter.ToUInt16(currentReceivingSegment.Memory.Span);
+                currentReceivingSegment.Release();
 
-                    ReceiveAsync(payloadLength);
+                if (payloadLength == 0)
+                {
+                    Debug.WriteLine("ProcessReceive | Zero-length payload rejected.", "error");
+                    OnPacketReceiveFailed?.Invoke(this);
                     return;
-                default:
-                    OnPacketReceived?.Invoke(this, onReceived, currentReceivingSegment);
+                }
+
+                if (!receiveBuffer.TryReserveSegment(out Segment payloadSegment))
+                {
+                    Debug.WriteLine("ProcessReceive | Failed to reserve payload segment.", "error");
+                    OnPacketReceiveFailed?.Invoke(this);
                     return;
+                }
+
+                currentReceivingSegment = payloadSegment;
+                phase = ReceivePhase.Payload;
+                expectedBytes = payloadLength;
+                receivedBytes = 0;
+
+                IssueReceive();
+            }
+            else
+            {
+                currentReceivingSegment.Memory = currentReceivingSegment.Memory.Slice(0, expectedBytes);
+                OnPacketReceived?.Invoke(this, onReceived, currentReceivingSegment);
             }
         }
 

@@ -16,7 +16,7 @@ namespace DuneTransport.Transport.Interface
         event Action<ITransport>? OnPacketReceiveFailed;
         event Action OnDisconnectRequested;
 
-        void ReceiveAsync(int bufferSize = 2);
+        void ReceiveAsync();
         void SendAsync(Segment packet, int packetSize);
         bool TryReserveSendPacket(out Segment segment);
     }
