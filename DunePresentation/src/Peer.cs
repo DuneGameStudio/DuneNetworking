@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Threading;
-using System.Threading.Tasks;
 using DunePresentation.Interface;
 using DuneSession.SocketConnectors.Interface;
 using DuneTransport.BufferManager;
@@ -16,12 +15,12 @@ namespace DunePresentation
         private readonly IConnection _connection;
         private readonly PacketRouter _router;
         private readonly IPacketEncryptor? _encryptor;
-        private readonly TimeSpan _requestTimeout;
+        private readonly long _timeoutTicks; // Stopwatch ticks; 0 = no timeout
 
-        private readonly ConcurrentDictionary<ushort, PendingRequest> _pendingRequests =
-            new ConcurrentDictionary<ushort, PendingRequest>();
+        private readonly ConcurrentDictionary<ushort, PendingRequest> _pendingRequests = new ConcurrentDictionary<ushort, PendingRequest>();
 
         private int _nextCorrelationId;
+        private Timer? _timeoutTimer;
 
         public bool IsConnected => _connection.IsConnected;
 
@@ -32,73 +31,43 @@ namespace DunePresentation
             _connection = connection ?? throw new ArgumentNullException(nameof(connection));
             _router = router ?? throw new ArgumentNullException(nameof(router));
             _encryptor = config.Encryptor;
-            _requestTimeout = config.RequestTimeout;
+            _timeoutTicks = (long)(config.RequestTimeout.TotalSeconds * Stopwatch.Frequency);
 
             _connection.Transport.OnPacketReceived += HandlePacketReceived;
             _connection.Transport.OnPacketReceiveFailed += HandleReceiveFailed;
             _connection.OnDisconnected += HandleDisconnected;
 
+            if (_timeoutTicks > 0)
+                _timeoutTimer = new Timer(SweepTimedOutRequests, null,
+                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+
             _connection.Transport.ReceiveAsync();
         }
 
-        public Task<TResponse> SendRequestAsync<TRequest, TResponse>(
+        public void SendRequest<TRequest, TResponse>(
             TRequest request,
-            CancellationToken cancellationToken = default)
+            Action<TResponse> onResponse,
+            Action? onFailed = null)
             where TRequest : IRequest<TResponse>
             where TResponse : IResponse, new()
         {
             ushort correlationId = AllocateCorrelationId();
 
-            var tcs = new TaskCompletionSource<IResponse>(
-                TaskCreationOptions.RunContinuationsAsynchronously);
-
             var pending = new PendingRequest
             {
-                Tcs = tcs,
-                ResponseFactory = () => new TResponse()
+                ResponseFactory = () => new TResponse(),
+                OnResponse = response => onResponse((TResponse)response),
+                OnFailed = onFailed,
+                DeadlineTick = _timeoutTicks > 0 ? Stopwatch.GetTimestamp() + _timeoutTicks : 0
             };
 
             _pendingRequests[correlationId] = pending;
 
-            CancellationTokenSource? timeoutCts = null;
-            CancellationToken effectiveToken = cancellationToken;
-
-            if (_requestTimeout > TimeSpan.Zero)
-            {
-                timeoutCts = cancellationToken.CanBeCanceled
-                    ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
-                    : new CancellationTokenSource();
-                timeoutCts.CancelAfter(_requestTimeout);
-                effectiveToken = timeoutCts.Token;
-            }
-
-            if (effectiveToken.CanBeCanceled)
-            {
-                pending.CancellationRegistration = effectiveToken.Register(() =>
-                {
-                    if (_pendingRequests.TryRemove(correlationId, out var removed))
-                    {
-                        removed.Tcs.TrySetCanceled(cancellationToken.IsCancellationRequested
-                            ? cancellationToken
-                            : CancellationToken.None);
-                    }
-                    timeoutCts?.Dispose();
-                });
-                _pendingRequests[correlationId] = pending;
-            }
-
             if (!SendPacket(PacketType.Request, request.PacketId, correlationId, request))
             {
-                if (_pendingRequests.TryRemove(correlationId, out var removed))
-                {
-                    removed.CancellationRegistration.Dispose();
-                    removed.Tcs.TrySetException(
-                        new InvalidOperationException("Send buffer exhausted."));
-                }
-                timeoutCts?.Dispose();
+                if (_pendingRequests.TryRemove(correlationId, out _))
+                    onFailed?.Invoke();
             }
-
-            return CastTask<TResponse>(tcs.Task);
         }
 
         public void Disconnect()
@@ -154,14 +123,11 @@ namespace DunePresentation
             if (!_pendingRequests.TryRemove(correlationId, out var pending))
                 return;
 
-            pending.CancellationRegistration.Dispose();
-
             var response = pending.ResponseFactory();
             if (response.Deserialize(userData, length))
-                pending.Tcs.TrySetResult(response);
+                pending.OnResponse(response);
             else
-                pending.Tcs.TrySetException(
-                    new InvalidOperationException("Failed to deserialize response."));
+                pending.OnFailed?.Invoke();
         }
 
         private void HandleRequest(ReadOnlySpan<byte> userData, int length,
@@ -193,13 +159,23 @@ namespace DunePresentation
             foreach (var kvp in _pendingRequests)
             {
                 if (_pendingRequests.TryRemove(kvp.Key, out var pending))
-                {
-                    pending.CancellationRegistration.Dispose();
-                    pending.Tcs.TrySetCanceled();
-                }
+                    pending.OnFailed?.Invoke();
             }
 
             OnDisconnected?.Invoke();
+        }
+
+        private void SweepTimedOutRequests(object? state)
+        {
+            long now = Stopwatch.GetTimestamp();
+            foreach (var kvp in _pendingRequests)
+            {
+                if (kvp.Value.DeadlineTick > 0 && now >= kvp.Value.DeadlineTick)
+                {
+                    if (_pendingRequests.TryRemove(kvp.Key, out var pending))
+                        pending.OnFailed?.Invoke();
+                }
+            }
         }
 
         private bool SendPacket(PacketType type, ushort packetId, ushort correlationId,
@@ -237,12 +213,6 @@ namespace DunePresentation
             return id;
         }
 
-        private static async Task<TResponse> CastTask<TResponse>(Task<IResponse> task)
-            where TResponse : IResponse
-        {
-            return (TResponse)await task.ConfigureAwait(false);
-        }
-
         #region IDisposable
 
         private bool _disposed;
@@ -253,6 +223,9 @@ namespace DunePresentation
             {
                 if (disposing)
                 {
+                    _timeoutTimer?.Dispose();
+                    _timeoutTimer = null;
+
                     _connection.Transport.OnPacketReceived -= HandlePacketReceived;
                     _connection.Transport.OnPacketReceiveFailed -= HandleReceiveFailed;
                     _connection.OnDisconnected -= HandleDisconnected;
@@ -260,10 +233,7 @@ namespace DunePresentation
                     foreach (var kvp in _pendingRequests)
                     {
                         if (_pendingRequests.TryRemove(kvp.Key, out var pending))
-                        {
-                            pending.CancellationRegistration.Dispose();
-                            pending.Tcs.TrySetCanceled();
-                        }
+                            pending.OnFailed?.Invoke();
                     }
                 }
 

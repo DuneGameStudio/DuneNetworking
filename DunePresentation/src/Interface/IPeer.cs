@@ -1,6 +1,4 @@
 using System;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace DunePresentation.Interface
 {
@@ -10,9 +8,10 @@ namespace DunePresentation.Interface
 
         event Action? OnDisconnected;
 
-        Task<TResponse> SendRequestAsync<TRequest, TResponse>(
+        void SendRequest<TRequest, TResponse>(
             TRequest request,
-            CancellationToken cancellationToken = default)
+            Action<TResponse> onResponse,
+            Action? onFailed = null)
             where TRequest : IRequest<TResponse>
             where TResponse : IResponse, new();
 
