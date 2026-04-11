@@ -1,45 +1,47 @@
+using System;
 using DuneTransport.Transport.Interface;
 
 namespace DuneTransport.BufferManager.Interface
 {
     public interface ISegmentManager
     {
-        ushort Id { get; set; }
-        
         Segment segment { get; set; }
-        
-        public int PacketSize { get; set; }
-        
-        bool OnDeserialize();
-        
+
+        int PacketSize { get; set; }
+
         bool OnSerialize();
-        
+
+        bool OnDeserialize();
+
         void OnSend(ITransport transport)
         {
             transport.SendAsync(segment, PacketSize);
         }
-        
-        bool Serialize(ITransport transport)
-        {
-            if (!transport.TryReserveSendPacket(out Segment newSegment)) 
-                return false;
-            
-            segment = newSegment;
-            
-            if (OnSerialize())
-                return true;
 
-            segment.Release();
-            return false;
-        }
-        
-        bool Deserialize()
+        bool Serialize(ITransport transport, Action<Segment, int>? afterSerialize = null)
         {
-            if (!OnDeserialize()) 
+            if (!transport.TryReserveSendPacket(out Segment newSegment))
                 return false;
-            
-            segment.Release();
+
+            segment = newSegment;
+
+            if (!OnSerialize())
+            {
+                segment.Release();
+                return false;
+            }
+
+            afterSerialize?.Invoke(segment, PacketSize);
             return true;
+        }
+
+        bool Deserialize(Action<Segment, int>? beforeDeserialize = null)
+        {
+            beforeDeserialize?.Invoke(segment, PacketSize);
+
+            bool result = OnDeserialize();
+            segment.Release();
+            return result;
         }
     }
 }

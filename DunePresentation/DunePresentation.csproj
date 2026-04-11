@@ -6,7 +6,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <Folder Include="src\" />
+      <ProjectReference Include="..\DuneSession\DuneSession.csproj" />
     </ItemGroup>
 
 </Project>
