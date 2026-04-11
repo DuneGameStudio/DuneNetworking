@@ -6,7 +6,7 @@ namespace DunePresentation.Interface
     {
         void RegisterRequestHandler<TRequest, TResponse>(
             Action<TRequest, Action<TResponse>> handler)
-            where TRequest : IRequest<TResponse>, new()
-            where TResponse : IResponse, new();
+            where TRequest : IRequest, new()
+            where TResponse : IResponse;
     }
 }

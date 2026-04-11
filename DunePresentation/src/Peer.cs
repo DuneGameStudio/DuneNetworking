@@ -1,8 +1,6 @@
 using System;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.Sockets;
-using System.Threading;
 using DunePresentation.Interface;
 using DuneSession.SocketConnectors.Interface;
 using DuneTransport.BufferManager;
@@ -15,31 +13,26 @@ namespace DunePresentation
         private readonly IConnection _connection;
         private readonly PacketRouter _router;
         private readonly IPacketEncryptor? _encryptor;
-        private readonly long _timeoutTicks; // Stopwatch ticks; 0 = no timeout
-
-        private readonly ConcurrentDictionary<ushort, PendingRequest> _pendingRequests = new ConcurrentDictionary<ushort, PendingRequest>();
-
-        private int _nextCorrelationId;
-        private Timer? _timeoutTimer;
+        private readonly long _timeoutTicks;
 
         public bool IsConnected => _connection.IsConnected;
 
         public event Action? OnDisconnected;
 
-        public Peer(IConnection connection, PacketRouter router, PeerConfiguration config)
+        public Peer(IConnection connection, IPacketRouter router, PeerConfiguration config)
         {
             _connection = connection ?? throw new ArgumentNullException(nameof(connection));
-            _router = router ?? throw new ArgumentNullException(nameof(router));
+            _router = (PacketRouter)(router ?? throw new ArgumentNullException(nameof(router)));
             _encryptor = config.Encryptor;
-            _timeoutTicks = (long)(config.RequestTimeout.TotalSeconds * Stopwatch.Frequency);
+
+            if (config.RequestTimeout > TimeSpan.Zero)
+                _timeoutTicks = (long)(config.RequestTimeout.TotalSeconds * Stopwatch.Frequency);
+
+            _router.OnRequestTimedOut += HandleRequestTimedOut;
 
             _connection.Transport.OnPacketReceived += HandlePacketReceived;
             _connection.Transport.OnPacketReceiveFailed += HandleReceiveFailed;
             _connection.OnDisconnected += HandleDisconnected;
-
-            if (_timeoutTicks > 0)
-                _timeoutTimer = new Timer(SweepTimedOutRequests, null,
-                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
 
             _connection.Transport.ReceiveAsync();
         }
@@ -48,24 +41,30 @@ namespace DunePresentation
             TRequest request,
             Action<TResponse> onResponse,
             Action? onFailed = null)
-            where TRequest : IRequest<TResponse>
+            where TRequest : IRequest
             where TResponse : IResponse, new()
         {
-            ushort correlationId = AllocateCorrelationId();
-
             var pending = new PendingRequest
             {
-                ResponseFactory = () => new TResponse(),
-                OnResponse = response => onResponse((TResponse)response),
-                OnFailed = onFailed,
-                DeadlineTick = _timeoutTicks > 0 ? Stopwatch.GetTimestamp() + _timeoutTicks : 0
+                HandleResponse = (userData, length) =>
+                {
+                    var response = new TResponse();
+                    if (!response.ReadFieldsFromBuffer(userData, length))
+                        return false;
+                    onResponse(response);
+                    return true;
+                },
+                OnFailed = onFailed
             };
 
-            _pendingRequests[correlationId] = pending;
+            if (_timeoutTicks > 0)
+                pending.DeadlineTick = Stopwatch.GetTimestamp() + _timeoutTicks;
 
-            if (!SendPacket(PacketType.Request, request.PacketId, correlationId, request))
+            ushort correlationId = _router.Track(pending);
+
+            if (!SendPacket(request, PacketType.Request, correlationId, _connection.Transport))
             {
-                if (_pendingRequests.TryRemove(correlationId, out _))
+                if (_router.TryComplete(correlationId, out _))
                     onFailed?.Invoke();
             }
         }
@@ -73,6 +72,27 @@ namespace DunePresentation
         public void Disconnect()
         {
             _connection.DisconnectAsync();
+        }
+
+        private bool SendPacket<TPacket>(TPacket packet, PacketType type,
+                                         ushort correlationId, ITransport transport)
+            where TPacket : IPacket
+        {
+            ushort packetId = packet.PacketId;
+            var encryptor = _encryptor;
+
+            if (!packet.Serialize(transport, (seg, size) =>
+            {
+                var span = seg.Memory.Span;
+                PresentationHeader.Write(span, type, packetId, correlationId);
+
+                if (encryptor != null)
+                    encryptor.Encrypt(span.Slice(0, size), span);
+            }))
+                return false;
+
+            packet.OnSend(transport);
+            return true;
         }
 
         private void HandlePacketReceived(ITransport transport, SocketAsyncEventArgs args,
@@ -85,14 +105,14 @@ namespace DunePresentation
                 if (span.Length < PresentationHeader.Size)
                     return;
 
-                PresentationHeader.Read(span, out PacketType type, out bool encrypted,
+                if (_encryptor != null)
+                    _encryptor.Decrypt(span, span);
+
+                PresentationHeader.Read(span, out PacketType type,
                                         out ushort packetId, out ushort correlationId);
 
                 int userDataLength = span.Length - PresentationHeader.Size;
                 var userData = span.Slice(PresentationHeader.Size, userDataLength);
-
-                if (encrypted && _encryptor != null)
-                    _encryptor.Decrypt(userData, userData);
 
                 switch (type)
                 {
@@ -108,7 +128,7 @@ namespace DunePresentation
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Peer.HandlePacketReceived | Exception: {ex.Message}", "error");
+                Debug.WriteLine($"Peer.HandlePacketReceived | Exception:\n{ex}", "error");
             }
             finally
             {
@@ -117,16 +137,12 @@ namespace DunePresentation
             }
         }
 
-        private void HandleResponse(ReadOnlySpan<byte> userData, int length,
-                                    ushort correlationId)
+        private void HandleResponse(ReadOnlySpan<byte> userData, int length, ushort correlationId)
         {
-            if (!_pendingRequests.TryRemove(correlationId, out var pending))
+            if (!_router.TryComplete(correlationId, out PendingRequest pending))
                 return;
 
-            var response = pending.ResponseFactory();
-            if (response.Deserialize(userData, length))
-                pending.OnResponse(response);
-            else
+            if (!pending.HandleResponse(userData, length))
                 pending.OnFailed?.Invoke();
         }
 
@@ -134,83 +150,48 @@ namespace DunePresentation
                                    ushort packetId, ushort correlationId,
                                    ITransport transport)
         {
-            if (!_router.TryGetHandler(packetId, out var invoker))
+            if (!_router.TryGetHandler(packetId, out HandlerEntry entry))
+                return;
+
+            IRequest request = entry.Factory();
+            if (!request.ReadFieldsFromBuffer(userData, length))
                 return;
 
             try
             {
-                invoker.Invoke(userData, length, correlationId, transport, _encryptor);
+                entry.Invoke(request, response =>
+                    SendPacket(response, PacketType.Response, correlationId, transport));
             }
             catch (Exception ex)
             {
                 Debug.WriteLine(
-                    $"Peer.HandleRequest | Handler threw for PacketId {packetId}: {ex.Message}",
+                    $"Peer.HandleRequest | Handler threw for PacketId {packetId}:\n{ex}",
                     "error");
             }
         }
 
+        private void HandleRequestTimedOut(PendingRequest pending)
+        {
+            pending.OnFailed?.Invoke();
+        }
+
+        private void FailAllPending()
+        {
+            var drained = _router.DrainPending();
+            foreach (var pending in drained)
+                pending.OnFailed?.Invoke();
+        }
+
         private void HandleReceiveFailed(ITransport transport)
         {
-            Debug.WriteLine("Peer.HandleReceiveFailed | Receive failed.", "error");
+            Debug.WriteLine("Peer.HandleReceiveFailed | Receive failed, disconnecting.", "error");
+            _connection.DisconnectAsync();
         }
 
         private void HandleDisconnected()
         {
-            foreach (var kvp in _pendingRequests)
-            {
-                if (_pendingRequests.TryRemove(kvp.Key, out var pending))
-                    pending.OnFailed?.Invoke();
-            }
-
+            FailAllPending();
             OnDisconnected?.Invoke();
-        }
-
-        private void SweepTimedOutRequests(object? state)
-        {
-            long now = Stopwatch.GetTimestamp();
-            foreach (var kvp in _pendingRequests)
-            {
-                if (kvp.Value.DeadlineTick > 0 && now >= kvp.Value.DeadlineTick)
-                {
-                    if (_pendingRequests.TryRemove(kvp.Key, out var pending))
-                        pending.OnFailed?.Invoke();
-                }
-            }
-        }
-
-        private bool SendPacket(PacketType type, ushort packetId, ushort correlationId,
-                                IPacket packet)
-        {
-            if (!_connection.Transport.TryReserveSendPacket(out var segment))
-                return false;
-
-            var span = segment.Memory.Span;
-
-            packet.Serialize(span.Slice(PresentationHeader.Size), out int bytesWritten);
-
-            bool encrypted = false;
-            if (_encryptor != null)
-            {
-                var userData = span.Slice(PresentationHeader.Size, bytesWritten);
-                _encryptor.Encrypt(userData, userData);
-                encrypted = true;
-            }
-
-            PresentationHeader.Write(span, type, encrypted, packetId, correlationId);
-
-            _connection.Transport.SendAsync(segment, PresentationHeader.Size + bytesWritten);
-            return true;
-        }
-
-        private ushort AllocateCorrelationId()
-        {
-            ushort id;
-            do
-            {
-                id = (ushort)Interlocked.Increment(ref _nextCorrelationId);
-            }
-            while (_pendingRequests.ContainsKey(id));
-            return id;
         }
 
         #region IDisposable
@@ -223,18 +204,14 @@ namespace DunePresentation
             {
                 if (disposing)
                 {
-                    _timeoutTimer?.Dispose();
-                    _timeoutTimer = null;
-
                     _connection.Transport.OnPacketReceived -= HandlePacketReceived;
                     _connection.Transport.OnPacketReceiveFailed -= HandleReceiveFailed;
                     _connection.OnDisconnected -= HandleDisconnected;
 
-                    foreach (var kvp in _pendingRequests)
-                    {
-                        if (_pendingRequests.TryRemove(kvp.Key, out var pending))
-                            pending.OnFailed?.Invoke();
-                    }
+                    _router.Dispose();
+                    _router.OnRequestTimedOut -= HandleRequestTimedOut;
+
+                    FailAllPending();
                 }
 
                 _disposed = true;

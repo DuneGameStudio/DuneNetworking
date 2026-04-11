@@ -1,80 +1,113 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
 using DunePresentation.Interface;
-using DuneTransport.Transport.Interface;
 
 namespace DunePresentation
 {
-    internal interface IRequestHandlerInvoker
+    internal readonly struct HandlerEntry
     {
-        void Invoke(ReadOnlySpan<byte> payload, int length,
-                    ushort correlationId, ITransport transport,
-                    IPacketEncryptor? encryptor);
+        public readonly Func<IRequest> Factory;
+        public readonly Action<IRequest, Action<IResponse>> Invoke;
+
+        public HandlerEntry(Func<IRequest> factory, Action<IRequest, Action<IResponse>> invoke)
+        {
+            Factory = factory;
+            Invoke = invoke;
+        }
     }
 
-    internal class RequestHandlerInvoker<TRequest, TResponse> : IRequestHandlerInvoker
-        where TRequest : IRequest<TResponse>, new()
-        where TResponse : IResponse, new()
+    public sealed class PacketRouter : IPacketRouter, IDisposable
     {
-        private readonly Action<TRequest, Action<TResponse>> _handler;
+        private readonly Dictionary<ushort, HandlerEntry> _handlers = new Dictionary<ushort, HandlerEntry>();
 
-        public RequestHandlerInvoker(Action<TRequest, Action<TResponse>> handler)
+        private readonly ConcurrentDictionary<ushort, PendingRequest> _pending = new ConcurrentDictionary<ushort, PendingRequest>();
+
+        private int _nextCorrelationId;
+
+        private readonly Timer _timer;
+
+        internal event Action<PendingRequest>? OnRequestTimedOut;
+
+        public PacketRouter()
         {
-            _handler = handler;
+            _timer = new Timer(Sweep, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
         }
 
-        public void Invoke(ReadOnlySpan<byte> payload, int length,
-                           ushort correlationId, ITransport transport,
-                           IPacketEncryptor? encryptor)
+        public void RegisterRequestHandler<TRequest, TResponse>(Action<TRequest, Action<TResponse>> handler) where TRequest : IRequest, new() where TResponse : IResponse
         {
-            var request = new TRequest();
-            if (!request.Deserialize(payload, length))
-                return;
+            if (handler == null)
+                throw new ArgumentNullException(nameof(handler));
 
-            Action<TResponse> reply = response =>
+            ushort packetId = new TRequest().PacketId;
+
+            if (_handlers.ContainsKey(packetId))
+                throw new InvalidOperationException($"A handler is already registered for PacketId {packetId}.");
+
+            _handlers[packetId] = new HandlerEntry(
+                factory: () => new TRequest(),
+                invoke: (request, sendReply) => handler((TRequest)request, response => sendReply(response)));
+        }
+
+        internal bool TryGetHandler(ushort packetId, out HandlerEntry entry)
+        {
+            return _handlers.TryGetValue(packetId, out entry);
+        }
+
+        internal ushort Track(PendingRequest request)
+        {
+            ushort id = AllocateCorrelationId();
+            _pending[id] = request;
+            return id;
+        }
+
+        internal bool TryComplete(ushort correlationId, out PendingRequest request)
+        {
+            return _pending.TryRemove(correlationId, out request);
+        }
+
+        internal List<PendingRequest> DrainPending()
+        {
+            var drained = new List<PendingRequest>(_pending.Count);
+            foreach (var kvp in _pending)
             {
-                if (!transport.TryReserveSendPacket(out var segment))
-                    return;
+                if (_pending.TryRemove(kvp.Key, out var pending))
+                    drained.Add(pending);
+            }
+            return drained;
+        }
 
-                var span = segment.Memory.Span;
+        private ushort AllocateCorrelationId()
+        {
+            ushort id;
+            do
+            {
+                id = (ushort)Interlocked.Increment(ref _nextCorrelationId);
+            }
+            while (_pending.ContainsKey(id));
+            return id;
+        }
 
-                response.Serialize(span.Slice(PresentationHeader.Size), out int bytesWritten);
-
-                bool encrypted = false;
-                if (encryptor != null)
+        private void Sweep(object? state)
+        {
+            long now = Stopwatch.GetTimestamp();
+            foreach (var kvp in _pending)
+            {
+                if (kvp.Value.DeadlineTick > 0 && now >= kvp.Value.DeadlineTick)
                 {
-                    var userData = span.Slice(PresentationHeader.Size, bytesWritten);
-                    encryptor.Encrypt(userData, userData);
-                    encrypted = true;
+                    if (_pending.TryRemove(kvp.Key, out var pending))
+                        OnRequestTimedOut?.Invoke(pending);
                 }
-
-                PresentationHeader.Write(span, PacketType.Response, encrypted,
-                                         response.PacketId, correlationId);
-
-                transport.SendAsync(segment, PresentationHeader.Size + bytesWritten);
-            };
-
-            _handler(request, reply);
-        }
-    }
-
-    public class PacketRouter : IPacketRouter
-    {
-        private readonly Dictionary<ushort, IRequestHandlerInvoker> _handlers =
-            new Dictionary<ushort, IRequestHandlerInvoker>();
-
-        public void RegisterRequestHandler<TRequest, TResponse>(
-            Action<TRequest, Action<TResponse>> handler)
-            where TRequest : IRequest<TResponse>, new()
-            where TResponse : IResponse, new()
-        {
-            var packetId = new TRequest().PacketId;
-            _handlers[packetId] = new RequestHandlerInvoker<TRequest, TResponse>(handler);
+            }
         }
 
-        internal bool TryGetHandler(ushort packetId, out IRequestHandlerInvoker invoker)
+        public void Dispose()
         {
-            return _handlers.TryGetValue(packetId, out invoker!);
+            using var waitHandle = new ManualResetEvent(false);
+            _timer.Dispose(waitHandle);
+            waitHandle.WaitOne();
         }
     }
 }

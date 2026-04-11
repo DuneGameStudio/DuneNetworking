@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 
 namespace DunePresentation
 {
@@ -13,27 +14,26 @@ namespace DunePresentation
     {
         public const int Size = 5;
 
-        public static void Write(Span<byte> buffer, PacketType type, bool encrypted,
+        public static void Write(Span<byte> buffer, PacketType type,
                                  ushort packetId, ushort correlationId)
         {
-            byte flags = (byte)((byte)type & 0x03);
-            if (encrypted)
-                flags |= 0x04;
+            if (buffer.Length < Size)
+                throw new ArgumentException($"Buffer too small for presentation header (need {Size} bytes).", nameof(buffer));
 
-            buffer[0] = flags;
-            BitConverter.TryWriteBytes(buffer.Slice(1), packetId);
-            BitConverter.TryWriteBytes(buffer.Slice(3), correlationId);
+            buffer[0] = (byte)((byte)type & 0x03);
+            BinaryPrimitives.WriteUInt16LittleEndian(buffer.Slice(1), packetId);
+            BinaryPrimitives.WriteUInt16LittleEndian(buffer.Slice(3), correlationId);
         }
 
         public static void Read(ReadOnlySpan<byte> buffer, out PacketType type,
-                                out bool encrypted, out ushort packetId,
-                                out ushort correlationId)
+                                out ushort packetId, out ushort correlationId)
         {
-            byte flags = buffer[0];
-            type = (PacketType)(flags & 0x03);
-            encrypted = (flags & 0x04) != 0;
-            packetId = BitConverter.ToUInt16(buffer.Slice(1));
-            correlationId = BitConverter.ToUInt16(buffer.Slice(3));
+            if (buffer.Length < Size)
+                throw new ArgumentException($"Buffer too small for presentation header (need {Size} bytes).", nameof(buffer));
+
+            type = (PacketType)(buffer[0] & 0x03);
+            packetId = BinaryPrimitives.ReadUInt16LittleEndian(buffer.Slice(1));
+            correlationId = BinaryPrimitives.ReadUInt16LittleEndian(buffer.Slice(3));
         }
     }
 }

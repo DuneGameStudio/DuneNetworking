@@ -12,7 +12,7 @@ namespace DunePresentation.Interface
             TRequest request,
             Action<TResponse> onResponse,
             Action? onFailed = null)
-            where TRequest : IRequest<TResponse>
+            where TRequest : IRequest
             where TResponse : IResponse, new();
 
         void Disconnect();
