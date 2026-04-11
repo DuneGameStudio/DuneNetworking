@@ -30,10 +30,13 @@ namespace DunePresentation.Peer
             _connection.Transport.OnPacketReceived += OnPacketReceivedHandler;
             _connection.Transport.OnPacketReceiveFailed += OnPacketReceiveFailedHandler;
             _connection.OnDisconnected += OnDisconnectedHandler;
-
-            _connection.Transport.ReceiveAsync();
         }
 
+        public void StartReceiving()
+        {
+            _connection.Transport.ReceiveAsync();
+        }
+        
         public bool Send<T>(T packet) where T : IPacket
         {
             ushort packetId = packet.PacketId;
