@@ -1,7 +1,7 @@
 using System;
 using DuneTransport.BufferManager.Interface;
 
-namespace DunePresentation.Interface
+namespace DunePresentation.Packet.Interfaces
 {
     public interface IPacket : ISegmentManager
     {
@@ -24,17 +24,5 @@ namespace DunePresentation.Interface
             return ReadFieldsFromBuffer(
                 segment.Memory.Span.Slice(PresentationHeader.Size, userLen), userLen);
         }
-    }
-
-    public interface IRequest : IPacket
-    {
-    }
-
-    public interface IResponse : IPacket
-    {
-    }
-
-    public interface IMessage : IPacket
-    {
     }
 }

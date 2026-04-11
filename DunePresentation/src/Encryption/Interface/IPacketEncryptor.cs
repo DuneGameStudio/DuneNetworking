@@ -1,6 +1,6 @@
 using System;
 
-namespace DunePresentation.Interface
+namespace DunePresentation.Encryption.Interface
 {
     public interface IPacketEncryptor
     {
