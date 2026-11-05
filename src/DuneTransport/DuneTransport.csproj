@@ -1,0 +1,14 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>netstandard2.1</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>disable</ImplicitUsings>
+    </PropertyGroup>
+    <ItemGroup>
+      <Folder Include="src\" />
+    </ItemGroup>
+    <ItemGroup>
+        <InternalsVisibleTo Include="DuneSession" />
+        <InternalsVisibleTo Include="DuneTransport.Tests" />
+    </ItemGroup>
+</Project>
