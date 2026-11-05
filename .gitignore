@@ -35,6 +35,11 @@ obj/
 *.pdb.meta
 *.mdb.meta
 *.meta
+*.DS_Store
+*TestResults
+*.remember
+*.superpowers
+
 
 ### Windows ###
 # Windows thumbnail cache files
@@ -62,3 +67,17 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 .idea/
+
+# claude
+/.claude/
+/docs/superpowers/
+CLAUDE.md
+
+
+# C# Dev Kit
+*.lscache
+
+# Graphify
+graphify-out/
+.gitattributes
+.graphifyignore
