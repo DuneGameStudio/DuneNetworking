@@ -34,7 +34,7 @@ All tests use real implementations. Some use mocks for unit tests, some use real
 | `Peer_DecryptAndDeserialize_*` (5)                              | Success, RegistryError, DecryptThrows, DeserializeFails, ThrowingEncryptor | Unit (mock encryptor) |
 | `Peer_EncryptorIntegration_SerializeAndDecrypt`                 | XOR encryptor with mock                                 | Unit                  |
 | `Peer_DecryptAndDeserialize_SegmentTooSmall_SerializationError` | Buffer validation                                       | Unit                  |
-| `PeerClient_*` (6)                                              | Construction, ConnectAsync, events, dispose             | Unit (mock connector) |
+| `PeerClient_*` (6)                                              | Construction, TryConnect, events, dispose               | Unit (mock connector) |
 | `PeerServer_*` (6)                                              | Construction, Start/Stop, events, dispose               | Unit (mock connector) |
 | `PacketRegistry_ConcurrentRegistration_NoDuplicate`             | Thread-safe registration                                | Concurrency           |
 | `Peer_ConcurrentSerializeAndDeserialize`                        | Thread-safe peer operations                             | Concurrency           |

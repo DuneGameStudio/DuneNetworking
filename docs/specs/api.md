@@ -248,7 +248,6 @@ enum TransportError
 | `PoolExhausted`         | Segment pool had no free segment.                                                   |
 | `ProtocolError`         | Peer sent a malformed frame (zero-length or oversized payload).                     |
 | `InvalidSegment`        | Caller passed a segment the send buffer cannot resolve.                             |
-| `HandlerFailed`         | An `OnPacketReceived` subscriber threw. The segment is released on their behalf.    |
 | `ObjectDisposed`        | Operation called on a disposed Transport.                                           |
 | `SocketDisconnected`    | FIN received, or the socket is no longer connected.                                 |
 | `ReceiveAlreadyPending` | Reentrant `ReceiveAsync()` call.                                                    |
@@ -384,7 +383,6 @@ new SegmentedBuffer(int arrayLength = 8192, int segmentCount = 32)
 | ---------------------------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------- |
 | `TryReserveSegment(out Segment)`                                             | `bool`  | Rents a segment. Returns `false` if the pool is exhausted.                                              |
 | `ReleaseMemory(int segmentNumber)`                                           | `void`  | Returns a segment to the pool. Idempotent. `ArgumentOutOfRangeException` if out of range.               |
-| `GetRegisteredMemory(int segmentNumber, int length, out Memory<byte>)`       | `bool`  | Validates bounds and returns a `Memory<byte>` view (no ownership transfer). Used to locate backing memory for framing. |
 
 ***
 
@@ -507,14 +505,14 @@ new ClientConnector(TransportOptions options)
 
 | Method                                   | Returns | Description                                                                                 |
 | ---------------------------------------- | ------- | ------------------------------------------------------------------------------------------- |
-| `ConnectAsync(string address, int port)` | `bool`  | Begins an async TCP connect. Returns `false` if already connected, a connect is in progress, or the connector is disposed. |
+| `TryConnect(string address, int port, out SocketError error)` | `bool`  | Begins an async TCP connect. `true` = attempt in flight (outcome via `OnConnected`/`OnConnectFailed`); `false` = rejected — `error` says why: `InvalidArgument` (bad address or port), the OS error of a synchronous socket failure, or the catch-all `SocketError` for a state rejection (already connected, a connect in progress, or disposed). A synchronous rejection fires no event. |
 
 #### Events
 
 | Event             | Signature                   | Description                                               |
 | ----------------- | --------------------------- | --------------------------------------------------------- |
 | `OnConnected`     | `Action<IConnection>?`     | Fires when connect succeeds. Produces a new `Connection`. A successful reconnect disposes the connection it replaces. |
-| `OnConnectFailed` | `Action<SocketError>?`     | Fires when connect fails. Socket disposed.                |
+| `OnConnectFailed` | `Action<SocketError>?`     | Fires when a connection attempt fails (asynchronous network outcomes only — synchronous rejections ride `TryConnect`'s return value). Socket disposed. |
 
 **Example:**
 
@@ -522,7 +520,7 @@ new ClientConnector(TransportOptions options)
 var connector = new ClientConnector();
 connector.OnConnected += conn => { /* use conn.Transport */ };
 connector.OnConnectFailed += err => { /* handle */ };
-connector.ConnectAsync("127.0.0.1", 5000);
+connector.TryConnect("127.0.0.1", 5000, out var err); // false => err says why (no event)
 ```
 
 ***
@@ -559,7 +557,7 @@ new ServerConnector(int backlog, TransportOptions options) // custom pool
 
 | Method                                     | Description                                                                                   |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| `StartListening(string address, int port)` | Binds the socket and starts listening. Single-shot (calling while already listening has no effect). Throws on a bad address or bind failure. |
+| `TryStartListening(string address, int port, out SocketError error)` | Binds the socket and starts listening. Returns `true` when listening, `false` when the start was declined or the bind failed — `error` says why (`InvalidArgument`, the catch-all `SocketError` for a state rejection such as already listening, or the OS bind error). Single-shot (a second call returns `false`). Never throws; no event fires for a declined start. |
 | `AcceptConnection()`                       | Begins an async accept. One-shot — call again after each accept to continue.                   |
 | `StopListening()`                          | Closes the listening socket. Existing accepted connections are unaffected.                     |
 
@@ -575,7 +573,7 @@ new ServerConnector(int backlog, TransportOptions options) // custom pool
 ```C#
 var server = new ServerConnector();
 server.OnClientConnected += conn => { /* handle client */ };
-server.StartListening("0.0.0.0", 5000);
+server.TryStartListening("0.0.0.0", 5000, out var err); // false => err says why (never throws)
 server.AcceptConnection();
 ```
 
@@ -740,14 +738,14 @@ new PeerClient(PacketRegistry registry, Func<IPacketEncryptor>? encryptorFactory
 
 | Method                                   | Returns | Description               |
 | ---------------------------------------- | ------- | ------------------------- |
-| `ConnectAsync(string address, int port)` | `bool`  | Begins an async TCP connect. |
+| `TryConnect(string address, int port, out SocketError error)` | `bool`  | Begins an async TCP connect. `false` + `error` for a synchronous rejection (bad address or port, already connected, an attempt in progress, or disposed — no event). |
 
 #### Events
 
 | Event             | Signature                   | Description                                     |
 | ----------------- | --------------------------- | ----------------------------------------------- |
 | `OnPeerConnected` | `Action<IPeer>?`           | Fires when connect succeeds. Produces a `Peer`. |
-| `OnConnectFailed` | `Action<SocketError>?`     | Fires when connect fails.                       |
+| `OnConnectFailed` | `Action<SocketError>?`     | Fires when a connection attempt fails (asynchronous outcomes only). |
 
 **Example:**
 
@@ -774,7 +772,7 @@ client.OnPeerConnected += peer =>
     };
     peer.Connection.Transport.ReceiveAsync();  // initial arm
 };
-client.ConnectAsync("127.0.0.1", 5000);
+client.TryConnect("127.0.0.1", 5000, out var err); // false => err says why (no event)
 ```
 
 ***
@@ -815,7 +813,7 @@ new PeerServer(PacketRegistry registry, Func<IPacketEncryptor>? encryptorFactory
 
 | Method                                     | Description                  |
 | ------------------------------------------ | ---------------------------- |
-| `StartListening(string address, int port)` | Binds and starts listening.  |
+| `TryStartListening(string address, int port, out SocketError error)` | Binds and starts listening. `false` + `error` for a declined start or bind failure (never throws, no event). |
 | `AcceptConnection()`                       | Begins an async accept.      |
 | `StopListening()`                          | Closes the listening socket. |
 
@@ -959,7 +957,7 @@ Serialization thread
       → returns SerializeResult.Ok / PoolExhausted / SerializeFailed
     → PresentationHeader.Write(span, packetId)   // write the 2-byte presentation header
     → encryptor?.Encrypt(span[0..PacketSize], span)  // optional, in place
-    → on any throw: segment released, (null, SerializationError) returned
+    → a throwing encryptor propagates to the caller (must not throw); segment lost
   → app enqueues (peer, seg.Value, packet.PacketSize)   // only if seg != null
 
 Send thread
@@ -987,10 +985,10 @@ Socket data arrives
 
 Serialization thread
   var (result, err) = peer.DecryptAndDeserialize(segment)
-    → encryptor?.Decrypt(span, span)         // on throw: (null, DecryptError), segment released
-    → PresentationHeader.Read(span, out id)  // on throw: (null, SerializationError), segment released
+    → encryptor?.Decrypt(span, span)         // must not throw; a throw propagates, segment lost
+    → PresentationHeader.Read(span, out id)
     → registry.TryGetEntry(id, out entry)    // on miss: (null, RegistryError), segment released
-    → packet = entry.Factory()
+    → packet = entry.Factory()                 // must not throw; a throw propagates, segment lost
     → packet.Deserialize()                   // on false: (null, DeserializeError); segment released
     → on success: ((packet, entry.Invoke), 0)  // segment already released by Deserialize
   → app enqueues (packet, handler)

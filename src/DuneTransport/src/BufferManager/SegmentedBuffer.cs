@@ -5,22 +5,23 @@ using System.Threading;
 namespace DuneTransport.BufferManager
 {
     /// <summary>
-    /// Thread-safe fixed-size memory pool that leases and reclaims <see cref="Segment"/> slices.
+    /// Thread-safe fixed-size memory pool that leases and reclaims <see cref="Segment"/> slots.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Divides a contiguous byte array into equal-sized segments. Each segment can be
-    /// reserved and released independently. The pool is safe for concurrent access from
-    /// multiple threads.
+    /// Divides a contiguous byte array into equal-sized slots. Each slot can be
+    /// reserved and released independently, and the pool is safe for concurrent
+    /// access from multiple threads.
     /// </para>
     /// <para>
-    /// Release is idempotent: calling <see cref="ReleaseMemory"/> multiple times on the
-    /// same segment index is safe. The <c>ITransport</c> interface relies on this property
-    /// for race-condition cleanup (handler exceptions, dispose races).
+    /// Release is idempotent: calling <see cref="ReleaseMemory"/> multiple times on
+    /// the same slot index is safe. The transport relies on this property for
+    /// race-condition cleanup (racing completions, dispose races).
     /// </para>
     /// </remarks>
     public class SegmentedBuffer
     {
+        /// <summary>The backing byte array, divided into equal-sized slots (slot 0 of the array backs segment 1).</summary>
         readonly byte[] data;
 
         /// <summary>The size of each segment in bytes.</summary>
@@ -32,20 +33,23 @@ namespace DuneTransport.BufferManager
         /// <summary>The number of currently free (available) segments.</summary>
         public int FreeCount => freeSegments.Count;
 
+        /// <summary>The size of one slot, in bytes (backing array size divided by the segment count).</summary>
         readonly int segmentSize;
 
+        /// <summary>The number of equal-sized slots the backing array is divided into.</summary>
         readonly int segmentCount;
 
+        /// <summary>The queue of free slot indices; reserving dequeues, releasing enqueues.</summary>
         readonly ConcurrentQueue<int> freeSegments;
 
-        /// <summary>Allocation state per segment: 0 = free, 1 = allocated (accessed via <see cref="Interlocked"/>)</summary>
+        /// <summary>Allocation state per segment: 0 = free, 1 = allocated (accessed via <see cref="Interlocked"/>).</summary>
         readonly int[] isAllocated;
 
         /// <summary>
-        /// Creates a new segmented buffer pool.
+        /// Creates a segmented buffer pool.
         /// </summary>
-        /// <param name="arrayLength">Total size of the backing byte array. Divided evenly into <paramref name="segmentCount"/> segments.</param>
-        /// <param name="segmentCount">Number of equal-sized segments to create.</param>
+        /// <param name="arrayLength">Total size of the backing byte array in bytes; divided evenly into <paramref name="segmentCount"/> slots.</param>
+        /// <param name="segmentCount">Number of equal-sized slots to create (1-based segment indices run 1 through this value).</param>
         public SegmentedBuffer(int arrayLength = 8192, int segmentCount = 32)
         {
             if (segmentCount <= 0)
@@ -91,7 +95,9 @@ namespace DuneTransport.BufferManager
             int segmentStart = (segmentIndex - 1) * segmentSize;
             segment.SegmentIndex = segmentIndex;
             segment.ReleaseMemoryCallback = ReleaseMemory;
-            segment.Memory = data.AsMemory(segmentStart, segmentSize);
+            Memory<byte> full = data.AsMemory(segmentStart, segmentSize);
+            segment.Memory = full;
+            segment.FullSlot = full;
             return true;
         }
 
@@ -117,46 +123,12 @@ namespace DuneTransport.BufferManager
                 throw new ArgumentOutOfRangeException(nameof(segmentNumber));
 
             // Atomic check-and-clear: if already free (0), return immediately.
-            // Idempotent: Transport relies on this for handler-throw and dispose-race cleanup paths.
+            // Idempotent: the transport relies on this for racing-completion and dispose cleanup paths.
             if (Interlocked.Exchange(ref isAllocated[segmentNumber], 0) == 0)
                 return;
 
             freeSegments.Enqueue(segmentNumber);
         }
 
-        /// <summary>
-        /// Retrieves a memory view of a specific segment without transferring ownership.
-        /// </summary>
-        /// <param name="segmentNumber">The 1-based index of the segment.</param>
-        /// <param name="length">The desired length of the memory slice (must not exceed <see cref="SegmentSize"/>).</param>
-        /// <param name="registeredMemory">
-        /// When this method returns, contains the memory slice if the operation succeeded;
-        /// otherwise contains a default <see cref="Memory{T}"/>.
-        /// </param>
-        /// <returns><c>true</c> if the memory slice was retrieved; otherwise <c>false</c> if the segment number or length is invalid.</returns>
-        /// <remarks>
-        /// <para>
-        /// This method does NOT transfer ownership — the segment remains allocated.
-        /// Use <see cref="TryReserveSegment(out Segment)"/> for ownership transfer.
-        /// </para>
-        /// <para>
-        /// Typically used by <see cref="Transport.Interface.ITransport"/> to locate a segment's
-        /// backing memory for framing operations (writing length headers).
-        /// </para>
-        /// </remarks>
-        public bool GetRegisteredMemory(int segmentNumber, int length, out Memory<byte> registeredMemory)
-        {
-            registeredMemory = default;
-
-            if (segmentNumber < 1 || segmentNumber > segmentCount)
-                return false;
-
-            if (length < 0 || length > segmentSize)
-                return false;
-
-            int start = (segmentNumber - 1) * segmentSize;
-            registeredMemory = data.AsMemory(start, length);
-            return true;
-        }
     }
 }

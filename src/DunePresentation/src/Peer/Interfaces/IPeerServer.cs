@@ -21,17 +21,29 @@ namespace DunePresentation.Peer.Interfaces
         /// <summary>
         /// Raised when a client peer connection is accepted.
         /// </summary>
+        /// <remarks>
+        /// Subscribers run on the socket-completion thread and must not throw: a throw
+        /// escapes the completion callback and crashes the process.
+        /// </remarks>
         event Action<IPeer>? OnPeerConnected;
 
-        /// <summary>Raised when a connection accept fails.</summary>
+        /// <summary>
+        /// Raised when a connection accept fails.
+        /// </summary>
+        /// <remarks>
+        /// Subscribers run on the socket-completion thread and must not throw: a throw
+        /// escapes the completion callback and crashes the process.
+        /// </remarks>
         event Action<SocketError>? OnAcceptFailed;
 
         /// <summary>
         /// Begins listening for incoming connections on the specified endpoint.
         /// </summary>
-        /// <param name="address">The IP address to bind to.</param>
-        /// <param name="port">The port to listen on.</param>
-        void StartListening(string address, int port);
+        /// <param name="address">The IPv4 address to bind to (must parse as an IPv4 literal; hostnames and IPv6 literals are not accepted).</param>
+        /// <param name="port">The port to listen on (0-65535).</param>
+        /// <param name="error">On <c>false</c>, why the socket is not listening (bad address or port, already listening, another start in progress, disposed, or an OS bind error). No event fires for a declined start.</param>
+        /// <returns><c>true</c> if the server is listening; <c>false</c> if the start was declined or the bind failed.</returns>
+        bool TryStartListening(string address, int port, out SocketError error);
 
         /// <summary>Stops listening for new connections.</summary>
         void StopListening();

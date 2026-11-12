@@ -22,7 +22,6 @@ These tests use real sockets on loopback and cover synchronous paths, error hand
 - `Transport_SendAsync_*` - Send paths (sync completion on loopback)
 - `Transport_Dispose_*` - Dispose idempotency, in-flight cleanup
 - `Transport_Receive_*ProtocolError` - Zero-length, oversized payload rejection
-- `Transport_OnPacketReceived_HandlerThrows_FiresHandlerFailed` - Handler exception safety
 - `Transport_SendAsync_SocketDisconnected_AfterFIN` - FIN detection
 - `Transport_ReceiveAsync_FromOnPacketReceived_Handler` - Re-arm pattern
 - `Transport_Dispose_RacingWith*` - Concurrency safety

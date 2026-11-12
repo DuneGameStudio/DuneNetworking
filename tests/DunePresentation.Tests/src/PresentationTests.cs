@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -153,12 +155,11 @@ namespace DunePresentation.Tests
         }
 
         [Fact]
-        public void SerializeAndEncrypt_EncryptorThrows_ReleasesSegment_ReturnsNullWithSerializationError()
+        public void SerializeAndEncrypt_EncryptorThrows_Propagates()
         {
-            // ARRANGE — encryptor throws during the in-place encrypt phase (after Serialize
-            // reserved + OnSerialize succeeded). This is the SEG-1/SEG-2 leak path: the segment
-            // was reserved and handed to Peer; a presentation-throw must release it and return
-            // (null, SerializationError) rather than propagate.
+            // ARRANGE — encryptor throws during the in-place encrypt phase. New contract:
+            // a throwing encryptor propagates to the caller and the reserved segment is
+            // lost (documented foot gun: user encryptor code must not throw).
             var transport = new ObservableReleaseTransport();
             var connection = new MockConnection(transport);
             var registry = new PacketRegistry();
@@ -167,25 +168,10 @@ namespace DunePresentation.Tests
 
             var packet = new EchoPacket { Text = "hello" };
 
-            // ACT
-            Segment? segment;
-            PacketError error;
-            try
-            {
-                (segment, error) = peer.SerializeAndEncrypt(packet);
-            }
-            catch
-            {
-                // The contract of this method is to NOT propagate presentation throws.
-                Assert.Fail("SerializeAndEncrypt must not propagate a presentation-layer throw; it should release the segment and return the reason.");
-                return;
-            }
-
-            // ASSERT
-            Assert.Null(segment);
-            Assert.Equal(PacketError.SerializationError, error);
-            Assert.True(transport.ReleaseInvoked, "Reserved segment must be released back to the pool when the encryptor throws (otherwise SEG-2 leak)");
+            // ACT / ASSERT
+            Assert.Throws<InvalidOperationException>(() => peer.SerializeAndEncrypt(packet));
             Assert.True(encryptor.EncryptCalled, "Sanity — encryptor was actually invoked (throw path reached)");
+            Assert.False(transport.ReleaseInvoked, "By contract the segment is lost when the encryptor throws (no release).");
             peer.Dispose();
         }
 
@@ -322,14 +308,11 @@ namespace DunePresentation.Tests
             var encryptor = new MockEncryptor { SimulateDecryptThrow = true };
             var peer = new global::DunePresentation.Peer.Peer(connection, registry, encryptor);
 
-            bool released = false;
-            var segment = new Segment(1, new byte[100], _ => released = true);
+            var segment = new Segment(1, new byte[100], _ => { });
 
-            var (result, error) = peer.DecryptAndDeserialize(segment);
-
-            Assert.Null(result);
-            Assert.Equal(PacketError.DecryptError, error);
-            Assert.True(released, "Segment should have been released on decrypt error");
+            // New contract: a throwing encryptor propagates to the caller and the
+            // segment is lost (no release).
+            Assert.Throws<InvalidOperationException>(() => peer.DecryptAndDeserialize(segment));
             peer.Dispose();
         }
 
@@ -405,22 +388,43 @@ namespace DunePresentation.Tests
         }
 
         [Fact]
-        public void Peer_DecryptAndDeserialize_SegmentTooSmall_SerializationError()
+        public void Peer_DecryptAndDeserialize_FactoryThrows_Propagates()
+        {
+            // The registry factory is () => new T(): a packet type whose constructor
+            // throws now propagates to the caller, and the segment is lost (new
+            // contract: user packet code must not throw — a documented foot gun).
+            var transport = new MockTransport { ReserveSendResult = true };
+            var connection = new MockConnection(transport);
+            var registry = new PacketRegistry();
+            registry.RegisterHandler<ThrowingCtorPacket>(0x009A, null!, _ => _ => { });
+            var peer = new global::DunePresentation.Peer.Peer(connection, registry);
+
+            var segment = new Segment(1, new byte[100], _ => { });
+            var span = segment.Memory.Span;
+            span[0] = 0x9A; span[1] = 0x00; // packet ID 0x009A
+
+            // The registry factory is a reflection-created delegate, so the ctor
+            // throw arrives wrapped in TargetInvocationException (the unwrapped
+            // InvalidOperationException is the inner exception).
+            var ex = Assert.Throws<TargetInvocationException>(() => peer.DecryptAndDeserialize(segment));
+            Assert.IsAssignableFrom<InvalidOperationException>(ex.InnerException);
+            peer.Dispose();
+        }
+
+        [Fact]
+        public void Peer_DecryptAndDeserialize_SegmentTooSmall_Propagates()
         {
             var transport = new MockTransport { ReserveSendResult = true };
             var connection = new MockConnection(transport);
             var registry = new PacketRegistry();
             var peer = new global::DunePresentation.Peer.Peer(connection, registry);
 
-            // Segment with only 1 byte (less than 2-byte header)
-            bool released = false;
-            var segment = new Segment(1, new byte[1], _ => released = true);
+            // Segment with only 1 byte (less than 2-byte header): the header read
+            // now throws instead of being contained (contract: framed payloads are
+            // always header-sized; a too-small segment is a documented foot gun).
+            var segment = new Segment(1, new byte[1], _ => { });
 
-            var (result, error) = peer.DecryptAndDeserialize(segment);
-
-            Assert.Null(result);
-            Assert.Equal(PacketError.SerializationError, error);
-            Assert.True(released, "Segment should have been released on too-small error");
+            Assert.Throws<ArgumentException>(() => peer.DecryptAndDeserialize(segment));
             peer.Dispose();
         }
 
@@ -577,12 +581,12 @@ namespace DunePresentation.Tests
         }
 
         [Fact]
-        public void PeerClient_ConnectAsync_DelegatesToConnector()
+        public void PeerClient_TryConnect_DelegatesToConnector()
         {
             var mock = new MockClientConnector();
             var client = new PeerClient(new PacketRegistry(), client: mock);
 
-            bool result = client.ConnectAsync("127.0.0.1", 9999);
+            bool result = client.TryConnect("127.0.0.1", 9999, out _);
 
             Assert.True(mock.ConnectCalled);
             Assert.Equal("127.0.0.1", mock.LastAddress);
@@ -645,28 +649,24 @@ namespace DunePresentation.Tests
         }
 
         [Fact]
-        public void PeerClient_OnPeerConnected_ThrowingSubscriber_DisposesPeerAndConnection()
+        public void PeerClient_OnPeerConnected_ThrowingSubscriber_Propagates()
         {
             var mock = new MockClientConnector();
             var client = new PeerClient(new PacketRegistry(), client: mock);
 
-            IConnection? captured = null;
             client.OnPeerConnected += p =>
             {
-                captured = p.Connection;
                 throw new InvalidOperationException("subscriber boom");
             };
 
-            // The mock fires unguarded, so a missing guard would let the throw escape here.
-            mock.SimulateConnected();
-
-            var conn = Assert.IsType<MockConnection>(captured);
-            Assert.True(conn.Disposed, "A throwing subscriber must leave the peer's connection disposed.");
+            // New contract: the subscriber's throw propagates to the caller (the mock
+            // fires synchronously) instead of being contained.
+            Assert.Throws<InvalidOperationException>(() => mock.SimulateConnected());
             client.Dispose();
         }
 
         [Fact]
-        public void PeerClient_ThrowingEncryptorFactory_DisposesConnectionNoEvent()
+        public void PeerClient_ThrowingEncryptorFactory_PropagatesNoEvent()
         {
             var mock = new MockClientConnector();
             var client = new PeerClient(new PacketRegistry(),
@@ -676,26 +676,24 @@ namespace DunePresentation.Tests
             bool eventFired = false;
             client.OnPeerConnected += _ => eventFired = true;
 
-            // The mock fires unguarded, so a missing guard would let the factory throw escape here.
-            mock.SimulateConnected();
+            Assert.Throws<InvalidOperationException>(() => mock.SimulateConnected());
 
             // The factory threw before delivery, so the event must never have fired.
             Assert.False(eventFired);
-            var conn = Assert.IsType<MockConnection>(mock.LastConnection);
-            Assert.True(conn.Disposed, "The connection must be disposed even though no peer was created.");
             client.Dispose();
         }
 
         [Fact]
-        public void PeerClient_ThrowingOnConnectFailedSubscriber_NoEscape()
+        public void PeerClient_ThrowingOnConnectFailedSubscriber_Propagates()
         {
             var mock = new MockClientConnector();
             var client = new PeerClient(new PacketRegistry(), client: mock);
 
             client.OnConnectFailed += _ => throw new InvalidOperationException("subscriber boom");
 
-            // The mock fires unguarded: reaching the next line proves the relay is guarded.
-            mock.SimulateFailed();
+            // New contract: the relay is unguarded — the subscriber's throw propagates
+            // to the caller.
+            Assert.Throws<InvalidOperationException>(() => mock.SimulateFailed());
 
             client.Dispose();
         }
@@ -728,12 +726,12 @@ namespace DunePresentation.Tests
         }
 
         [Fact]
-        public void PeerServer_StartListening_DelegatesToConnector()
+        public void PeerServer_TryStartListening_DelegatesToConnector()
         {
             var mock = new MockServerConnector();
             var server = new PeerServer(new PacketRegistry(), server: mock);
 
-            server.StartListening("127.0.0.1", 9999);
+            server.TryStartListening("127.0.0.1", 9999, out _);
 
             Assert.True(mock.IsListening);
             Assert.Equal("127.0.0.1", mock.LastAddress);
@@ -747,7 +745,7 @@ namespace DunePresentation.Tests
             var mock = new MockServerConnector();
             var server = new PeerServer(new PacketRegistry(), server: mock);
 
-            server.StartListening("127.0.0.1", 9999);
+            server.TryStartListening("127.0.0.1", 9999, out _);
             server.StopListening();
 
             Assert.False(mock.IsListening);
@@ -795,36 +793,33 @@ namespace DunePresentation.Tests
         }
 
         [Fact]
-        public void PeerServer_OnPeerConnected_ThrowingSubscriber_DisposesPeerAndConnection()
+        public void PeerServer_OnPeerConnected_ThrowingSubscriber_Propagates()
         {
             var mock = new MockServerConnector();
             var server = new PeerServer(new PacketRegistry(), server: mock);
 
-            IConnection? captured = null;
             server.OnPeerConnected += p =>
             {
-                captured = p.Connection;
                 throw new InvalidOperationException("subscriber boom");
             };
 
-            // The mock fires unguarded, so a missing guard would let the throw escape here.
-            mock.SimulateClientConnected();
-
-            var conn = Assert.IsType<MockConnection>(captured);
-            Assert.True(conn.Disposed, "A throwing subscriber must leave the peer's connection disposed.");
+            // New contract: the subscriber's throw propagates to the caller (the mock
+            // fires synchronously) instead of being contained.
+            Assert.Throws<InvalidOperationException>(() => mock.SimulateClientConnected());
             server.Dispose();
         }
 
         [Fact]
-        public void PeerServer_ThrowingOnAcceptFailedSubscriber_NoEscape()
+        public void PeerServer_ThrowingOnAcceptFailedSubscriber_Propagates()
         {
             var mock = new MockServerConnector();
             var server = new PeerServer(new PacketRegistry(), server: mock);
 
             server.OnAcceptFailed += _ => throw new InvalidOperationException("subscriber boom");
 
-            // The mock fires unguarded: reaching the next line proves the relay is guarded.
-            mock.SimulateAcceptFailed();
+            // New contract: the relay is unguarded — the subscriber's throw propagates
+            // to the caller.
+            Assert.Throws<InvalidOperationException>(() => mock.SimulateAcceptFailed());
 
             server.Dispose();
         }
@@ -916,7 +911,7 @@ namespace DunePresentation.Tests
 
             // Server
             var server = new PeerServer(registry);
-            server.StartListening("127.0.0.1", port);
+            server.TryStartListening("127.0.0.1", port, out _);
             server.AcceptConnection();
 
             var serverPeerTcs = new System.Threading.Tasks.TaskCompletionSource<IPeer>();
@@ -926,7 +921,7 @@ namespace DunePresentation.Tests
             var client = new PeerClient(registry);
             var clientPeerTcs = new System.Threading.Tasks.TaskCompletionSource<IPeer>();
             client.OnPeerConnected += p => clientPeerTcs.TrySetResult(p);
-            client.ConnectAsync("127.0.0.1", port);
+            client.TryConnect("127.0.0.1", port, out _);
 
             var serverPeer = await serverPeerTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
             var clientPeer = await clientPeerTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -1030,11 +1025,11 @@ namespace DunePresentation.Tests
         }
 
         /// <summary>
-        /// Verifies Peer.DecryptAndDeserialize correctly handles decryptor failure
-        /// with a throwing encryptor.
+        /// Verifies that a throwing encryptor propagates to the caller
+        /// (contract: the encryptor must not throw; the segment is lost).
         /// </summary>
         [Fact]
-        public void Peer_DecryptAndDeserialize_ThrowingEncryptor_FailsWithDecryptError()
+        public void Peer_DecryptAndDeserialize_ThrowingEncryptor_Propagates()
         {
             // ARRANGE - Encryptor that throws on decrypt
             var throwingEncryptor = new ThrowingEncryptor(simulateDecryptThrow: true);
@@ -1042,18 +1037,141 @@ namespace DunePresentation.Tests
             var mockConn = new MockConnection(new MockTransport { ReserveSendResult = true });
             var peer = new global::DunePresentation.Peer.Peer(mockConn, registry, throwingEncryptor);
 
-            bool released = false;
-            var segment = new Segment(1, new byte[10], _ => released = true);
+            var segment = new Segment(1, new byte[10], _ => { });
 
-            // ACT
-            var (result, error) = peer.DecryptAndDeserialize(segment);
-
-            // ASSERT
-            Assert.Null(result);
-            Assert.Equal(PacketError.DecryptError, error);
-            Assert.True(released, "Segment should be released on decrypt error");
+            // ACT / ASSERT
+            Assert.Throws<CryptographicException>(() => peer.DecryptAndDeserialize(segment));
 
             peer.Dispose();
+        }
+
+        [Fact]
+        public void Peer_EncryptorThrow_SendPoolLosesExactlyOneSegment()
+        {
+            // A throwing encryptor now propagates (contract: user code must not throw)
+            // and the reserved segment is lost. This pins the pool bookkeeping around
+            // the removed guard: exactly one slot is consumed, nothing is
+            // double-released, and the pool stays fully functional afterwards.
+            var listener = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            listener.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, 1);
+            listener.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            listener.Listen(1);
+            int port = ((IPEndPoint)listener.LocalEndPoint!).Port;
+
+            var clientSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            clientSocket.Connect(new IPEndPoint(IPAddress.Loopback, port));
+            var serverSocket = listener.Accept();
+            listener.Close();
+
+            try
+            {
+                var connection = new Connection(serverSocket);
+                var peer = new global::DunePresentation.Peer.Peer(connection, new PacketRegistry(),
+                    new MockEncryptor { SimulateEncryptThrow = true });
+                var transport = connection.Transport;
+
+                // Hold 31 of the 32 default send segments.
+                var held = new List<Segment>();
+                for (int i = 0; i < 31; i++)
+                {
+                    Assert.True(transport.TryReserveSendPacket(out Segment s));
+                    held.Add(s);
+                }
+
+                // The encryptor throws: the call reserved the 32nd segment and then
+                // propagated, losing that segment permanently.
+                var packet = new EchoPacket { Text = "x" };
+                Assert.Throws<InvalidOperationException>(() => peer.SerializeAndEncrypt(packet));
+
+                // The pool is now full: the leaked segment occupies the last slot.
+                Assert.False(transport.TryReserveSendPacket(out _));
+
+                // Bookkeeping is intact: releasing one held slot frees exactly one,
+                // and an idempotent double-release of another is harmless.
+                held[0].Release();
+                Assert.True(transport.TryReserveSendPacket(out Segment freed));
+                freed.Release();
+                held[1].Release();
+                held[1].Release(); // idempotent by contract
+
+                // Full accounting: release everything held; the only segment still in
+                // use is the leaked one, so exactly 31 of 32 must be reservable.
+                foreach (var s in held) s.Release();
+                int reservable = 0;
+                var extra = new List<Segment>();
+                while (transport.TryReserveSendPacket(out Segment s2))
+                {
+                    reservable++;
+                    extra.Add(s2);
+                }
+                // Exactly one slot (the leaked segment) must be permanently lost.
+                Assert.Equal(31, reservable);
+                foreach (var s in extra) s.Release();
+
+                connection.Dispose();
+            }
+            finally
+            {
+                try { clientSocket.Close(); } catch { }
+                try { serverSocket.Close(); } catch { }
+            }
+        }
+
+        [Fact]
+        public async Task Peer_DecryptorThrow_ReceivePipelineStaysHealthy()
+        {
+            // A throwing decryptor propagates and the segment is lost (documented
+            // contract). This pins that the transport/pool pipeline around the
+            // removed guard is undamaged: the next packet still arrives intact.
+            var listener = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            listener.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, 1);
+            listener.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            listener.Listen(1);
+            int port = ((IPEndPoint)listener.LocalEndPoint!).Port;
+
+            var clientSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            clientSocket.Connect(new IPEndPoint(IPAddress.Loopback, port));
+            var serverSocket = listener.Accept();
+            listener.Close();
+
+            try
+            {
+                var peer = new global::DunePresentation.Peer.Peer(new Connection(serverSocket), new PacketRegistry(),
+                    new MockEncryptor { SimulateDecryptThrow = true });
+                var transport = peer.Connection.Transport;
+
+                Segment? seg1 = null;
+                var first = new TaskCompletionSource<Segment>();
+                var second = new TaskCompletionSource<Segment>();
+                transport.OnPacketReceived += (t, seg) =>
+                {
+                    if (seg1 == null) { seg1 = seg; first.TrySetResult(seg); }
+                    else second.TrySetResult(seg);
+                };
+
+                transport.ReceiveAsync();
+                byte[] frame = { 4, 0, 0xFF, 0xFF, 0xFF, 0xFF };
+                clientSocket.Send(frame);
+                var received1 = await first.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+                // The decryptor throws on the first packet: it propagates and the
+                // segment is lost (deliberately not released below).
+                Assert.Throws<InvalidOperationException>(() => peer.DecryptAndDeserialize(received1));
+
+                // The pipeline is undamaged: re-arm and receive a second packet.
+                transport.ReceiveAsync();
+                clientSocket.Send(frame);
+                var received2 = await second.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.Equal(received1.Memory.Length, received2.Memory.Length);
+                received2.Release();
+
+                peer.Dispose();
+            }
+            finally
+            {
+                try { clientSocket.Close(); } catch { }
+                try { serverSocket.Close(); } catch { }
+            }
         }
 
         /// <summary>
@@ -1150,7 +1268,7 @@ namespace DunePresentation.Tests
             registry.RegisterHandler<EchoPacket>(0x0003, null!, _ => p => { });
 
             var server = new PeerServer(registry, encryptorFactory: () => new XorEncryptor(0x42));
-            server.StartListening("127.0.0.1", port);
+            server.TryStartListening("127.0.0.1", port, out _);
             server.AcceptConnection();
 
             var serverPeerTcs = new TaskCompletionSource<IPeer>();
@@ -1160,7 +1278,7 @@ namespace DunePresentation.Tests
             var client = new PeerClient(registry, encryptorFactory: () => new XorEncryptor(0x42));
             var clientPeerTcs = new TaskCompletionSource<IPeer>();
             client.OnPeerConnected += p => clientPeerTcs.TrySetResult(p);
-            client.ConnectAsync("127.0.0.1", port);
+            client.TryConnect("127.0.0.1", port, out _);
 
             var serverPeer = await serverPeerTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
             var clientPeer = await clientPeerTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -1377,6 +1495,30 @@ namespace DunePresentation.Tests
             bool ISegmentManager.OnSerialize()
             {
                 return false; // Always fails
+            }
+        }
+
+        // Packet whose constructor throws — verifies the decrypt/deserialize path
+        // contains factory exceptions and releases the segment (G-5).
+        private class ThrowingCtorPacket : IPacket
+        {
+            public ThrowingCtorPacket()
+            {
+                throw new InvalidOperationException("ctor must throw");
+            }
+
+            public ushort PacketId => 0x009A;
+            public int PacketSize { get; set; }
+            public Segment segment { get; set; }
+
+            public void WriteFieldsToBuffer(Span<byte> buffer, out int bytesWritten)
+            {
+                bytesWritten = 0;
+            }
+
+            public bool ReadFieldsFromBuffer(ReadOnlySpan<byte> buffer, int length)
+            {
+                return true;
             }
         }
 

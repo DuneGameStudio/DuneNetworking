@@ -13,8 +13,11 @@ namespace DunePresentation.Packet.Interfaces
     /// <see cref="IPacket"/> adds the <see cref="PacketId"/> and field serialization.
     /// </para>
     /// <para>
-    /// Serialization writes the <see cref="PacketId"/> header, then calls
-    /// <see cref="WriteFieldsToBuffer"/> for user data. Deserialization reverses this.
+    /// The field methods operate on the span positioned after the 2-byte
+    /// presentation header — the header itself is written by the peer's send
+    /// pipeline, not by the packet. The OnSerialize/OnDeserialize default
+    /// implementations bridge the field methods to the segment lifecycle and
+    /// maintain <see cref="PacketSize"/> (header included).
     /// </para>
     /// </remarks>
     public interface IPacket : ISegmentManager

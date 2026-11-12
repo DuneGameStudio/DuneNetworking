@@ -8,16 +8,16 @@ namespace DuneTransport.Transport.Interface
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Manages the raw socket I/O for sending and receiving packets. Uses a 2-byte
-    /// little-endian length prefix for framing. Only one send and one receive may be
-    /// in flight simultaneously — attempting a second operation while one is pending
-    /// fires the appropriate error event.
+    /// Manages the raw socket I/O for sending and receiving packets, framing every
+    /// packet with a 2-byte little-endian length prefix. At most one send and one
+    /// receive are in flight at a time — attempting a second operation of the same
+    /// kind while one is pending fires the appropriate error event.
     /// </para>
     /// <para>
     /// Segment ownership transfers to event subscribers:
     /// <list type="bullet">
-    ///   <item><see cref="OnPacketReceived"/> — subscriber receives the segment, must release.</item>
-    ///   <item><see cref="OnPacketSendFailed"/> — subscriber receives the segment, decides retry or release.</item>
+    ///   <item><see cref="OnPacketReceived"/> — the subscriber receives the segment and must release it.</item>
+    ///   <item><see cref="OnPacketSendFailed"/> — the subscriber receives the segment and decides between retry and release.</item>
     /// </list>
     /// </para>
     /// </remarks>
@@ -53,14 +53,14 @@ namespace DuneTransport.Transport.Interface
         /// Raised when a packet send completes successfully.
         /// </summary>
         /// <remarks>
-        /// The segment has already been released back to the pool. No segment is passed
-        /// to the subscriber — the event signals send completion only.
+        /// The segment has already been released back to the pool. No segment is
+        /// passed to the subscriber — the event signals send completion only.
         /// </remarks>
         event Action<ITransport>? OnPacketSent;
 
         /// <summary>
-        /// Raised when a send attempt fails. Segment ownership TRANSFERS to
-        /// the subscriber — the segment is NOT released by Transport. The
+        /// Raised when a send attempt fails. Segment ownership transfers to the
+        /// subscriber — the segment is NOT released by the transport. The
         /// subscriber owns the segment and must either:
         /// <list type="bullet">
         ///   <item>Call <c>SendAsync()</c> again to retry (same segment, same data).</item>
@@ -74,14 +74,14 @@ namespace DuneTransport.Transport.Interface
 
         /// <summary>
         /// Raised when a complete framed packet has been received. Segment
-        /// ownership TRANSFERS to the subscriber — the subscriber is
+        /// ownership transfers to the subscriber — the subscriber is
         /// responsible for calling <c>Release()</c> when done.
         /// </summary>
         event Action<ITransport, Segment>? OnPacketReceived;
 
         /// <summary>
-        /// Raised when a receive attempt fails. Any segment Transport had
-        /// rented has already been released; no segment is passed to the
+        /// Raised when a receive attempt fails. Any segment the transport had
+        /// leased has already been released; no segment is passed to the
         /// subscriber. The <see cref="TransportError"/> argument indicates
         /// which branch fired.
         /// </summary>
@@ -92,20 +92,21 @@ namespace DuneTransport.Transport.Interface
         /// </summary>
         /// <remarks>
         /// <para>
-        /// Only one send may be in flight at a time. If a previous send has not
+        /// At most one send is in flight at a time. If a previous send has not
         /// yet completed (via <see cref="OnPacketSent"/> or
-        /// <see cref="OnPacketSendFailed"/>), calling this method again will fail
+        /// <see cref="OnPacketSendFailed"/>), calling this method again fails
         /// with <c>TransportError.SendAlreadyPending</c>.
         /// </para>
         /// <para>
-        /// <b>API Caveat — Retry contract:</b> When <see cref="OnPacketSendFailed"/>
-        /// fires, the send operation state is cleared and the transport becomes
-        /// technically capable of accepting a new send. However, the application MUST
-        /// NOT call <c>SendAsync()</c> with a different packet until it has resolved
-        /// the failed one — either by retrying the same segment or releasing it.
-        /// Sending a new packet while a previous failure is unresolved is an
-        /// application-level error: the library provides no ordering or queuing
-        /// guarantees, and packets may arrive out of intended sequence.
+        /// <b>Retry contract:</b> when <see cref="OnPacketSendFailed"/>
+        /// fires, the send operation slot is cleared and the transport is
+        /// technically capable of accepting a new send. The application MUST
+        /// NOT call <c>SendAsync()</c> with a different packet until it has
+        /// resolved the failed one — either by retrying the same segment or
+        /// releasing it. Sending a new packet while a previous failure is
+        /// unresolved is an application-level error: the library provides no
+        /// ordering or queuing guarantees, and packets may arrive out of their
+        /// intended sequence.
         /// </para>
         /// </remarks>
         void SendAsync(Segment packet, int packetSize);
@@ -115,14 +116,15 @@ namespace DuneTransport.Transport.Interface
         /// </summary>
         /// <remarks>
         /// <para>
-        /// Only one receive may be in flight at a time. If a previous receive has not
-        /// yet completed (via <see cref="OnPacketReceived"/> or
-        /// <see cref="OnPacketReceiveFailed"/>), calling this method again will fail
+        /// At most one receive is in flight at a time. If a previous receive has
+        /// not yet completed (via <see cref="OnPacketReceived"/> or
+        /// <see cref="OnPacketReceiveFailed"/>), calling this method again fails
         /// with <c>TransportError.ReceiveAlreadyPending</c>.
         /// </para>
         /// <para>
-        /// On success, <see cref="OnPacketReceived"/> fires with the complete packet segment.
-        /// On failure, <see cref="OnPacketReceiveFailed"/> fires with the error code.
+        /// On success, <see cref="OnPacketReceived"/> fires with the complete packet
+        /// segment. On failure, <see cref="OnPacketReceiveFailed"/> fires with the
+        /// error code.
         /// </para>
         /// </remarks>
         void ReceiveAsync();

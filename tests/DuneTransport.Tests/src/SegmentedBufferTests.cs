@@ -133,51 +133,57 @@ namespace DuneTransport.Tests
         }
 
         [Fact]
-        public void SegmentedBuffer_GetRegisteredMemory_ValidSegment()
+        public void Segment_TryGetMemory_ValidLength_ReturnsViewFromSlotStart()
         {
             var buf = new SegmentedBuffer(1024, 4);
-            Assert.True(buf.GetRegisteredMemory(1, 100, out var mem));
+            Assert.True(buf.TryReserveSegment(out var seg));
+
+            Assert.True(seg.TryGetMemory(100, out var mem));
             Assert.Equal(100, mem.Length);
+
+            // The view starts at the slot's beginning — the same origin as Memory.
+            mem.Span[0] = 0xAB;
+            Assert.Equal(0xAB, seg.Memory.Span[0]);
         }
 
         [Fact]
-        public void SegmentedBuffer_GetRegisteredMemory_FullSegmentSize()
+        public void Segment_TryGetMemory_FullSegmentSize_ReturnsWholeSlot()
         {
             var buf = new SegmentedBuffer(1024, 4);
-            Assert.True(buf.GetRegisteredMemory(2, 256, out var mem));
+            Assert.True(buf.TryReserveSegment(out var seg));
+
+            Assert.True(seg.TryGetMemory(256, out var mem));
             Assert.Equal(256, mem.Length);
         }
 
         [Fact]
-        public void SegmentedBuffer_GetRegisteredMemory_OutOfRange()
+        public void Segment_TryGetMemory_ExceedsSegmentSize_False()
         {
             var buf = new SegmentedBuffer(1024, 4);
-            Assert.False(buf.GetRegisteredMemory(0, 100, out _));
-            Assert.False(buf.GetRegisteredMemory(5, 100, out _));
+            Assert.True(buf.TryReserveSegment(out var seg));
+
+            Assert.False(seg.TryGetMemory(257, out _));
         }
 
         [Fact]
-        public void SegmentedBuffer_GetRegisteredMemory_ExceedsSegmentSize()
+        public void Segment_TryGetMemory_ZeroLength_ReturnsEmpty()
         {
             var buf = new SegmentedBuffer(1024, 4);
-            Assert.False(buf.GetRegisteredMemory(1, 257, out _));
-        }
+            Assert.True(buf.TryReserveSegment(out var seg));
 
-        [Fact]
-        public void SegmentedBuffer_GetRegisteredMemory_ZeroLength()
-        {
-            var buf = new SegmentedBuffer(1024, 4);
-            Assert.True(buf.GetRegisteredMemory(1, 0, out var mem));
+            Assert.True(seg.TryGetMemory(0, out var mem));
             Assert.Equal(0, mem.Length);
         }
 
         [Theory]
         [InlineData(-1)]
         [InlineData(-100)]
-        public void SegmentedBuffer_GetRegisteredMemory_NegativeLength(int length)
+        public void Segment_TryGetMemory_NegativeLength_False(int length)
         {
             var buf = new SegmentedBuffer(1024, 4);
-            Assert.False(buf.GetRegisteredMemory(1, length, out _));
+            Assert.True(buf.TryReserveSegment(out var seg));
+
+            Assert.False(seg.TryGetMemory(length, out _));
         }
 
         [Fact]

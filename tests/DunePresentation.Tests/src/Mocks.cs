@@ -133,13 +133,17 @@ namespace DunePresentation.Tests
         public event Action<IConnection>? OnConnected;
         public event Action<SocketError>? OnConnectFailed;
 
-        public bool ConnectAsync(string address, int port)
+        public bool TryConnect(string address, int port, out SocketError error)
         {
             ConnectCalled = true;
             LastAddress = address;
             LastPort = port;
             if (RejectConnect)
+            {
+                error = SocketError.SocketError;
                 return false;
+            }
+            error = SocketError.Success;
             return true;
         }
 
@@ -178,11 +182,13 @@ namespace DunePresentation.Tests
         public event Action<IConnection>? OnClientConnected;
         public event Action<SocketError>? OnAcceptFailed;
 
-        public void StartListening(string address, int port)
+        public bool TryStartListening(string address, int port, out SocketError error)
         {
             LastAddress = address;
             LastPort = port;
             IsListening = true;
+            error = SocketError.Success;
+            return true;
         }
 
         public void StopListening() => IsListening = false;

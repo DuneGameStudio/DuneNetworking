@@ -9,16 +9,20 @@ namespace DunePresentation.Packet
         /// success; a result is successful iff its error member equals this value.</summary>
         None,
 
-        /// <summary>Underlying segment pool had no free segment when one was needed during serialization.</summary>
+        /// <summary>The segment pool had no free segment when one was needed during serialization.</summary>
         PoolExhausted,
 
-        /// <summary>Serialization failed (buffer write, field serialization, or encryptor exception during Serialize).</summary>
+        /// <summary>The packet's fields could not be written during serialization.</summary>
         SerializationError,
 
-        /// <summary>Decrypt failed (encryptor threw during DecryptAndDeserialize).</summary>
+        /// <summary>
+        /// Reserved for the decrypt step. Not produced by the current flow: a
+        /// decryptor that throws propagates to the caller (it is contracted never
+        /// to throw) instead of being mapped to this code.
+        /// </summary>
         DecryptError,
 
-        /// <summary>Deserialize failed (packet.ReadFieldsFromBuffer returned false during DecryptAndDeserialize).</summary>
+        /// <summary>The packet's fields could not be read during deserialization.</summary>
         DeserializeError,
 
         /// <summary>The packet registry failed to resolve the received packet ID.</summary>

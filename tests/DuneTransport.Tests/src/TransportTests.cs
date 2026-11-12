@@ -551,31 +551,6 @@ namespace DuneTransport.Tests
         }
 
         [Fact]
-        public async Task Transport_OnPacketReceived_HandlerThrows_FiresHandlerFailed()
-        {
-            using var pair = new SocketPairFixture();
-            var transport = new global::DuneTransport.Transport.Transport(pair.Client);
-
-            var tcs = new TaskCompletionSource<TransportError>();
-            transport.OnPacketReceived += (t, seg) =>
-            {
-                throw new InvalidOperationException("handler boom");
-            };
-            transport.OnPacketReceiveFailed += (t, e) => tcs.TrySetResult(e);
-            transport.ReceiveAsync();
-
-            // Send a valid 1-byte payload
-            byte[] header = new byte[2];
-            BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(), 1);
-            pair.ServerConn.Send(header);
-            pair.ServerConn.Send(new byte[] { 0xAA });
-
-            var error = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            Assert.Equal(TransportError.HandlerFailed, error);
-            transport.Dispose();
-        }
-
-        [Fact]
         public async Task Transport_SendAsync_SocketDisconnected_AfterFIN()
         {
             using var pair = new SocketPairFixture();

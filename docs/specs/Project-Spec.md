@@ -36,11 +36,14 @@ state-machine internals live in `api.md` and `Decision-Log.md`.
 
 ### Getting a connection
 
-- **Client:** `PeerClient` wraps a `ClientConnector`. You call `ConnectAsync(address, port)`; on
-  success the connector produces a `Connection` (and a `Peer`) and fires your `OnConnected` handler.
-  Connect is **single-flight** — a second `ConnectAsync` while one is in progress is rejected. A
-  successful reconnect disposes the connection it replaces.
-- **Server:** `PeerServer` wraps a `ServerConnector`. You call `StartListening(address, port)`, then
+- **Client:** `PeerClient` wraps a `ClientConnector`. You call `TryConnect(address, port, out error)`;
+  `true` means the attempt is in flight and the connector will produce a `Connection` (and a `Peer`)
+  and fire your `OnConnected` handler, while `false` means the call was rejected synchronously and
+  `error` says why (bad address or port, already connected, an attempt in progress, disposed) — no
+  event fires for a synchronous rejection. Connect is **single-flight** — a second `TryConnect` while
+  one is in progress is rejected. A successful reconnect disposes the connection it replaces.
+- **Server:** `PeerServer` wraps a `ServerConnector`. You call `TryStartListening(address, port, out
+  error)` — `true` when listening, `false` with the reason in `error` (it never throws) — then
   `AcceptConnection()` — a **one-shot** accept. Each accepted client produces a `Connection` (and a
   `Peer`) fired to your `OnClientConnected` handler; call `AcceptConnection()` again for the next.
 

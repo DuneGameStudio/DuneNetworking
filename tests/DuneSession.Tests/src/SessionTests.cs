@@ -86,27 +86,31 @@ namespace DuneSession.Tests
         }
 
         [Fact]
-        public void ClientConnector_ConnectAsync_InvalidAddress_FiresFailure()
+        public void ClientConnector_TryConnect_InvalidAddress_ReturnsFalseNoEvent()
         {
+            // Synchronous rejection: reported through the return value with
+            // InvalidArgument; the event is NOT fired — the event channel is
+            // reserved for asynchronous network outcomes.
             var connector = new ClientConnector();
-            SocketError? error = null;
-            connector.OnConnectFailed += e => error = e;
+            SocketError? eventError = null;
+            connector.OnConnectFailed += e => eventError = e;
 
-            bool result = connector.ConnectAsync("not-valid-address", 1234);
+            bool result = connector.TryConnect("not-valid-address", 1234, out SocketError err);
 
             Assert.False(result);
-            Assert.NotNull(error);
+            Assert.Equal(SocketError.InvalidArgument, err);
+            Assert.Null(eventError);
             connector.Dispose();
         }
 
         [Fact]
-        public async Task ClientConnector_ConnectAsync_NonExistentServer_FiresFailure()
+        public async Task ClientConnector_TryConnect_NonExistentServer_FiresFailure()
         {
             var connector = new ClientConnector();
             var tcs = new TaskCompletionSource<SocketError>();
             connector.OnConnectFailed += e => tcs.TrySetResult(e);
 
-            connector.ConnectAsync("127.0.0.1", 59877);
+            connector.TryConnect("127.0.0.1", 59877, out _);
 
             var error = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
             Assert.NotEqual(SocketError.Success, error);
@@ -114,22 +118,25 @@ namespace DuneSession.Tests
         }
 
         [Fact]
-        public void ClientConnector_ConnectAsync_WhileConnecting_ReturnsFalse()
+        public void ClientConnector_TryConnect_WhileConnecting_ReturnsFalse()
         {
             var connector = new ClientConnector();
-            // Second call while first is still connecting should return false:
-            connector.ConnectAsync("127.0.0.1", 59878);
-            bool second = connector.ConnectAsync("127.0.0.1", 59878);
+            // Second call while first is still connecting should return false
+            // with the catch-all SocketError (the netstandard enum has no
+            // "in progress" member — state rejections share the catch-all):
+            connector.TryConnect("127.0.0.1", 59878, out _);
+            bool second = connector.TryConnect("127.0.0.1", 59878, out SocketError err);
             Assert.False(second);
+            Assert.Equal(SocketError.SocketError, err);
             connector.Dispose();
         }
 
         /// <summary>
-        /// Verifies that <c>ConnectAsync</c> successfully connects to a listening server
+        /// Verifies that <c>TryConnect</c> successfully connects to a listening server
         /// and fires <c>OnConnected</c> with a valid <c>IConnection</c>.
         /// </summary>
         [Fact]
-        public async Task ClientConnector_ConnectAsync_ValidServer_ConnectsSuccessfully()
+        public async Task ClientConnector_TryConnect_ValidServer_ConnectsSuccessfully()
         {
             // Start a real listener
             var listener = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
@@ -143,7 +150,7 @@ namespace DuneSession.Tests
             connector.OnConnected += conn => tcs.TrySetResult(conn);
 
             // Attempt connection
-            bool started = connector.ConnectAsync("127.0.0.1", port);
+            bool started = connector.TryConnect("127.0.0.1", port, out _);
             Assert.True(started);
 
             // Accept the connection on server side
@@ -184,7 +191,7 @@ namespace DuneSession.Tests
         public void ServerConnector_StopListening_Idempotent()
         {
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", 0);
+            connector.TryStartListening("127.0.0.1", 0, out _);
             connector.StopListening();
             connector.StopListening();
             connector.Dispose();
@@ -202,18 +209,18 @@ namespace DuneSession.Tests
         public void ServerConnector_StopListening_ClosesSocket()
         {
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", 0);
+            connector.TryStartListening("127.0.0.1", 0, out _);
             connector.StopListening();
             Assert.False(connector.IsListening);
             connector.Dispose();
         }
 
         [Fact]
-        public void ServerConnector_StartListening_AlreadyListening_NoOp()
+        public void ServerConnector_TryStartListening_AlreadyListening_NoOp()
         {
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", 0);
-            connector.StartListening("127.0.0.1", 0); // should not throw
+            connector.TryStartListening("127.0.0.1", 0, out _);
+            connector.TryStartListening("127.0.0.1", 0, out _); // should not throw
             connector.Dispose();
         }
 
@@ -231,7 +238,7 @@ namespace DuneSession.Tests
             probe.Close();
 
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", port);
+            connector.TryStartListening("127.0.0.1", port, out _);
 
             var tcs = new TaskCompletionSource<IConnection>();
             connector.OnClientConnected += conn => tcs.TrySetResult(conn);
@@ -261,7 +268,7 @@ namespace DuneSession.Tests
             probe.Close();
 
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", port);
+            connector.TryStartListening("127.0.0.1", port, out _);
 
             var accepted = new System.Collections.Generic.List<IConnection>();
             connector.OnClientConnected += conn => accepted.Add(conn);
@@ -297,7 +304,7 @@ namespace DuneSession.Tests
             probe.Close();
 
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", port);
+            connector.TryStartListening("127.0.0.1", port, out _);
 
             var tcs = new TaskCompletionSource<IConnection>();
             connector.OnClientConnected += conn => tcs.TrySetResult(conn);
@@ -334,7 +341,7 @@ namespace DuneSession.Tests
         public void ServerConnector_Dispose_WhileListening_CleansUp()
         {
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", 0);
+            connector.TryStartListening("127.0.0.1", 0, out _);
             Assert.True(connector.IsListening);
 
             connector.Dispose();
@@ -356,7 +363,7 @@ namespace DuneSession.Tests
             var connector = new ClientConnector();
             var tcs = new TaskCompletionSource<IConnection>();
             connector.OnConnected += conn => tcs.TrySetResult(conn);
-            connector.ConnectAsync("127.0.0.1", port);
+            connector.TryConnect("127.0.0.1", port, out _);
 
             var serverSocket = await Task.Run(() => listener.Accept());
             var connection = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -450,7 +457,7 @@ namespace DuneSession.Tests
             for (int i = 0; i < 50; i++)
             {
                 var connector = new ServerConnector();
-                connector.StartListening("127.0.0.1", 0);
+                connector.TryStartListening("127.0.0.1", 0, out _);
                 int failures = 0;
                 connector.OnAcceptFailed += _ => Interlocked.Increment(ref failures);
 
@@ -510,42 +517,113 @@ namespace DuneSession.Tests
         }
 
         /// <summary>
-        /// Verifies that ClientConnector.ConnectAsync fires OnConnectFailed with
-        /// SocketError when given an invalid IP address format (FormatException path).
-        /// Covers the FormatException catch block at ClientConnector.cs:82-88.
+        /// Verifies that ClientConnector.TryConnect reports SocketError.InvalidArgument
+        /// through its return value when given an invalid IP address format, without
+        /// firing OnConnectFailed. Covers the pre-claim endpoint-validation path
+        /// (validation runs before the in-flight claim is taken).
         /// </summary>
         [Fact]
-        public void ClientConnector_ConnectAsync_InvalidAddress_FiresConnectFailed()
+        public void ClientConnector_TryConnect_InvalidAddress_ReportsInvalidArgument()
         {
             var connector = new ClientConnector();
-            SocketError? error = null;
-            connector.OnConnectFailed += e => error = e;
+            SocketError? eventError = null;
+            connector.OnConnectFailed += e => eventError = e;
 
-            // ACT - Invalid IP format triggers FormatException in IPAddress.Parse
-            bool result = connector.ConnectAsync("not-a-valid-ip-address", 1234);
+            // ACT - invalid IP format: TryParse fails, the range check is never reached
+            bool result = connector.TryConnect("not-a-valid-ip-address", 1234, out SocketError err);
 
             // ASSERT
-            Assert.False(result, "Should return false for invalid address");
-            Assert.NotNull(error);
-            Assert.Equal(SocketError.SocketError, error.Value); // FormatException maps to SocketError
+            Assert.False(result);
+            Assert.Equal(SocketError.InvalidArgument, err);
+            Assert.Null(eventError); // sync rejection: return channel only, no event
 
             connector.Dispose();
         }
 
         /// <summary>
-        /// Verifies that ClientConnector.ConnectAsync fires OnConnectFailed when
-        /// connecting to a port with no listening server (SocketException path).
-        /// Covers the SocketException catch block at ClientConnector.cs:68-73.
+        /// Liveness pin: an out-of-range port is a caller error that must settle
+        /// through TryConnect's return value (never a throw, no event) and must
+        /// never wedge the connector — Dispose has to complete promptly even after
+        /// such a failure.
         /// </summary>
         [Fact]
-        public async Task ClientConnector_ConnectAsync_RefusedConnection_FiresConnectFailed()
+        public async Task ClientConnector_TryConnect_InvalidPort_ReportsInvalidArgument_DisposeCompletes()
+        {
+            var connector = new ClientConnector();
+            SocketError? eventError = null;
+            connector.OnConnectFailed += e => eventError = e;
+
+            // ACT - out-of-range port: the address parses, the explicit port
+            // range check is what fails
+            bool result = connector.TryConnect("127.0.0.1", 99999, out SocketError err);
+
+            // ASSERT - reported, not thrown, no event
+            Assert.False(result);
+            Assert.Equal(SocketError.InvalidArgument, err);
+            Assert.Null(eventError);
+
+            // ASSERT - liveness: dispose must not hang on a stuck claim
+            await Task.Run(() => connector.Dispose()).WaitAsync(TimeSpan.FromSeconds(5));
+        }
+
+        /// <summary>
+        /// Liveness pin: a negative port takes the same pre-claim failure path.
+        /// </summary>
+        [Fact]
+        public async Task ClientConnector_TryConnect_NegativePort_ReportsInvalidArgument_DisposeCompletes()
+        {
+            var connector = new ClientConnector();
+            SocketError? eventError = null;
+            connector.OnConnectFailed += e => eventError = e;
+
+            bool result = connector.TryConnect("127.0.0.1", -1, out SocketError err);
+
+            Assert.False(result);
+            Assert.Equal(SocketError.InvalidArgument, err);
+            Assert.Null(eventError);
+
+            await Task.Run(() => connector.Dispose()).WaitAsync(TimeSpan.FromSeconds(5));
+        }
+
+        /// <summary>
+        /// Value-level pin: an IPv6 literal is rejected before any socket work —
+        /// the connect socket is InterNetwork (IPv4 only), so the address-family
+        /// check reports InvalidArgument at the value level instead of letting a
+        /// family mismatch reach the endpoint assignment.
+        /// </summary>
+        [Fact]
+        public void ClientConnector_TryConnect_Ipv6Literal_ReportsInvalidArgument()
+        {
+            var connector = new ClientConnector();
+            SocketError? eventError = null;
+            connector.OnConnectFailed += e => eventError = e;
+
+            bool result = connector.TryConnect("2001:db8::1", 8080, out SocketError err);
+
+            // ASSERT - reported, not thrown, no event
+            Assert.False(result);
+            Assert.Equal(SocketError.InvalidArgument, err);
+            Assert.Null(eventError);
+
+            // A value-level rejection touched nothing — a plain dispose must be clean.
+            connector.Dispose();
+        }
+
+        /// <summary>
+        /// Verifies that a connection to a port with no listening server is reported
+        /// through OnConnectFailed exactly once — the asynchronous refusal outcome,
+        /// which rides the event channel (as opposed to synchronous rejections,
+        /// which ride the return value).
+        /// </summary>
+        [Fact]
+        public async Task ClientConnector_TryConnect_RefusedConnection_FiresConnectFailed()
         {
             var connector = new ClientConnector();
             var tcs = new TaskCompletionSource<SocketError>();
             connector.OnConnectFailed += e => tcs.TrySetResult(e);
 
             // ACT - Connect to closed port (no listener)
-            connector.ConnectAsync("127.0.0.1", 59999);
+            connector.TryConnect("127.0.0.1", 59999, out _);
 
             // ASSERT - Wait for async failure
             var error = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -582,7 +660,7 @@ namespace DuneSession.Tests
         public void ServerConnector_AcceptConnection_AfterStop_SilentBail()
         {
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", 0);
+            connector.TryStartListening("127.0.0.1", 0, out _);
             int failures = 0;
             connector.OnAcceptFailed += _ => Interlocked.Increment(ref failures);
 
@@ -613,7 +691,7 @@ namespace DuneSession.Tests
             // we set to a failed accept (SocketError != Success, AcceptSocket == null).
             // The real body then fires the real OnAcceptFailed event.
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", 0);
+            connector.TryStartListening("127.0.0.1", 0, out _);
 
             var tcs = new TaskCompletionSource<SocketError>();
             connector.OnAcceptFailed += e => tcs.TrySetResult(e);
@@ -672,7 +750,7 @@ namespace DuneSession.Tests
             probe.Close();
 
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", port);
+            connector.TryStartListening("127.0.0.1", port, out _);
 
             var tcs = new TaskCompletionSource<IConnection>();
             connector.OnClientConnected += conn => tcs.TrySetResult(conn);
@@ -754,7 +832,7 @@ namespace DuneSession.Tests
             probe.Close();
 
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", port);
+            connector.TryStartListening("127.0.0.1", port, out _);
 
             var delivered = new TaskCompletionSource<IConnection>();
             connector.OnClientConnected += conn => delivered.TrySetResult(conn);
@@ -787,13 +865,13 @@ namespace DuneSession.Tests
         }
 
         /// <summary>
-        /// Pin for the double-start quirk (N12b): a re-entrant StartListening must be a
+        /// Pin for the double-start quirk (N12b): a re-entrant TryStartListening must be a
         /// no-op that leaves the state intact, so StopListening actually closes and the
         /// port is released. (Previously the re-entrant call cleared the flag, so a
         /// later StopListening never closed and the port stayed bound until Dispose.)
         /// </summary>
         [Fact]
-        public void ServerConnector_DoubleStartListening_StopListening_ReleasesPort()
+        public void ServerConnector_DoubleStart_StopListening_ReleasesPort()
         {
             // Probe for a free port
             var probe = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
@@ -804,8 +882,8 @@ namespace DuneSession.Tests
             probe.Close();
 
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", port);
-            connector.StartListening("127.0.0.1", port); // re-entrant: no-op
+            connector.TryStartListening("127.0.0.1", port, out _);
+            connector.TryStartListening("127.0.0.1", port, out _); // re-entrant: no-op
 
             Assert.True(connector.IsListening);
             connector.StopListening();
@@ -821,19 +899,22 @@ namespace DuneSession.Tests
         }
 
         /// <summary>
-        /// Pin for the failed-start path (N13): a throwing StartListening must close the
-        /// socket (liveness follows the state transition, not the Dispose backstop) and
-        /// leave the state Unbound. The failure is forced by binding to a non-local
-        /// address (EADDRNOTAVAIL) — deterministic on every platform, unlike an
-        /// occupied-port probe (SO_REUSEADDR makes re-bind semantics platform-specific).
+        /// Pin for the failed-start path (N13): a failed start must close the socket
+        /// (liveness follows the state transition, not the Dispose backstop), leave
+        /// the state Unbound, and report the OS error through the return value —
+        /// never throw. The failure is forced by binding to a non-local address
+        /// (EADDRNOTAVAIL) — deterministic on every platform, unlike an occupied-port
+        /// probe (SO_REUSEADDR makes re-bind semantics platform-specific).
         /// </summary>
         [Fact]
-        public void ServerConnector_StartListening_Failure_ClosesSocketAndResetsState()
+        public void ServerConnector_TryStartListening_Failure_ClosesSocketAndResetsState()
         {
             var connector = new ServerConnector();
             // 192.0.2.1 (TEST-NET-1) is not assigned to any local interface:
-            // the Bind itself throws SocketException, exercising the catch path.
-            Assert.Throws<SocketException>(() => connector.StartListening("192.0.2.1", 8080));
+            // the Bind itself fails, exercising the socket-work catch path.
+            bool started = connector.TryStartListening("192.0.2.1", 8080, out SocketError err);
+            Assert.False(started);
+            Assert.NotEqual(SocketError.Success, err);
             Assert.False(connector.IsListening);
 
             // The connector's socket is closed by the catch — not left open.
@@ -845,6 +926,65 @@ namespace DuneSession.Tests
                 () => internalSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, 1));
 
             connector.Dispose(); // clean, idempotent
+        }
+
+        /// <summary>
+        /// Value-level pin: an IPv6 literal is rejected before the socket work —
+        /// the listening socket is InterNetwork (IPv4 only), so the address-family
+        /// check reports InvalidArgument at the value level instead of letting a
+        /// family mismatch reach the bind. The socket must be untouched (still
+        /// live) and the start still retryable afterwards.
+        /// </summary>
+        [Fact]
+        public void ServerConnector_TryStartListening_Ipv6Literal_ReportsInvalidArgument()
+        {
+            var connector = new ServerConnector();
+            SocketError? eventError = null;
+            connector.OnAcceptFailed += e => eventError = e;
+
+            bool started = connector.TryStartListening("2001:db8::1", 8080, out SocketError err);
+
+            // ASSERT - reported, not thrown, no event
+            Assert.False(started);
+            Assert.Equal(SocketError.InvalidArgument, err);
+            Assert.Null(eventError);
+            Assert.False(connector.IsListening);
+
+            // The value-level bail must not have closed the socket: a retry with a
+            // valid endpoint must still succeed, which is impossible on a dead socket.
+            bool retry = connector.TryStartListening("127.0.0.1", 8080, out SocketError retryErr);
+            Assert.True(retry);
+            Assert.Equal(SocketError.Success, retryErr);
+
+            connector.Dispose(); // clean, idempotent
+        }
+
+        /// <summary>
+        /// Pin for the failed-start death record: a failed bind closes the socket —
+        /// a single readonly instance, dead forever — so the failed start must
+        /// record the death in the state (2, not 0). A retry that read "never
+        /// started" would drive its bind into the closed socket and throw; the
+        /// retry instead bails cleanly with the catch-all state code.
+        /// </summary>
+        [Fact]
+        public void ServerConnector_TryStartListening_RetryAfterFailure_BailsCleanly()
+        {
+            var connector = new ServerConnector();
+
+            // First start: forced bind failure (non-local address) — the catch
+            // closes the socket and records the death.
+            bool first = connector.TryStartListening("192.0.2.1", 8080, out SocketError firstErr);
+            Assert.False(first);
+            Assert.NotEqual(SocketError.Success, firstErr);
+
+            // Retry on a valid endpoint: a clean state rejection, never an
+            // exception on the closed socket.
+            bool retry = connector.TryStartListening("127.0.0.1", 8080, out SocketError retryErr);
+            Assert.False(retry);
+            Assert.Equal(SocketError.SocketError, retryErr);
+            Assert.False(connector.IsListening);
+
+            connector.Dispose();
         }
 
         /// <summary>
@@ -864,7 +1004,7 @@ namespace DuneSession.Tests
             probe.Close();
 
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", port);
+            connector.TryStartListening("127.0.0.1", port, out _);
             // No OnClientConnected subscriber attached.
 
             var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
@@ -897,7 +1037,7 @@ namespace DuneSession.Tests
             probe.Close();
 
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", port);
+            connector.TryStartListening("127.0.0.1", port, out _);
             Assert.False(connector.IsAcceptPending);
 
             connector.AcceptConnection();
@@ -934,7 +1074,7 @@ namespace DuneSession.Tests
             probe.Close();
 
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", port);
+            connector.TryStartListening("127.0.0.1", port, out _);
 
             int delivered = 0;
             var tcs = new TaskCompletionSource<bool>();
@@ -966,7 +1106,7 @@ namespace DuneSession.Tests
             probe.Close();
 
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", port);
+            connector.TryStartListening("127.0.0.1", port, out _);
             connector.AcceptConnection();
             Assert.True(connector.IsAcceptPending);
 
@@ -990,7 +1130,7 @@ namespace DuneSession.Tests
             probe.Close();
 
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", port);
+            connector.TryStartListening("127.0.0.1", port, out _);
 
             var tcs = new TaskCompletionSource<IConnection>();
             connector.OnClientConnected += conn => tcs.TrySetResult(conn);
@@ -1039,7 +1179,7 @@ namespace DuneSession.Tests
             probe.Close();
 
             var connector = new ServerConnector();
-            connector.StartListening("127.0.0.1", port);
+            connector.TryStartListening("127.0.0.1", port, out _);
 
             var tcs = new TaskCompletionSource<IConnection>();
             connector.OnClientConnected += conn =>
@@ -1090,7 +1230,7 @@ namespace DuneSession.Tests
                 probe.Close();
 
                 var connector = new ServerConnector();
-                connector.StartListening("127.0.0.1", port);
+                connector.TryStartListening("127.0.0.1", port, out _);
 
                 var t1 = System.Threading.Tasks.Task.Run(() => connector.AcceptConnection());
                 var t2 = System.Threading.Tasks.Task.Run(() => connector.AcceptConnection());
@@ -1104,14 +1244,14 @@ namespace DuneSession.Tests
 
         /// <summary>
         /// The listening slot is an atomic claim, not a check: two racing
-        /// StartListening callers would otherwise both drive a non-idempotent
+        /// TryStartListening callers would otherwise both drive a non-idempotent
         /// bind on the same socket, and a failure on the loser's side could
         /// close the socket the winner is using. With the claim, exactly one
         /// start runs. The pin asserts the contract either way: no exception
         /// escapes either caller, and the connector ends up listening.
         /// </summary>
         [Fact]
-        public async Task ServerConnector_StartListening_RacingCallers_SingleBind()
+        public async Task ServerConnector_TryStartListening_RacingCallers_SingleBind()
         {
             for (int i = 0; i < 25; i++)
             {
@@ -1121,8 +1261,8 @@ namespace DuneSession.Tests
                 probe.Close();
 
                 var connector = new ServerConnector();
-                var t1 = System.Threading.Tasks.Task.Run(() => connector.StartListening("127.0.0.1", port));
-                var t2 = System.Threading.Tasks.Task.Run(() => connector.StartListening("127.0.0.1", port));
+                var t1 = System.Threading.Tasks.Task.Run(() => connector.TryStartListening("127.0.0.1", port, out _));
+                var t2 = System.Threading.Tasks.Task.Run(() => connector.TryStartListening("127.0.0.1", port, out _));
                 await System.Threading.Tasks.Task.WhenAll(t1, t2); // an escape fails the test
 
                 Assert.True(connector.IsListening); // exactly one bind won
@@ -1131,7 +1271,7 @@ namespace DuneSession.Tests
         }
 
         /// <summary>
-        /// Stress pin for the claim-first reorder of StartListening: in the old
+        /// Stress pin for the claim-first reorder of TryStartListening: in the old
         /// check-before-claim order, two racing callers on DIFFERENT ports both
         /// passed the "not listening" check before either claimed, and the loser
         /// then drove a second SetSocketOption/Bind/Listen on the socket the winner
@@ -1143,7 +1283,7 @@ namespace DuneSession.Tests
         /// ports — never a third endpoint, never dead under a true flag.
         /// </summary>
         [Fact]
-        public async Task ServerConnector_StartListening_RacingStart_NoZombie()
+        public async Task ServerConnector_TryStartListening_RacingStart_NoZombie()
         {
             const System.Reflection.BindingFlags NonPubInstance =
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
@@ -1166,10 +1306,10 @@ namespace DuneSession.Tests
 
                 var connector = new ServerConnector();
 
-                var t1 = System.Threading.Tasks.Task.Run(() => connector.StartListening("127.0.0.1", portA));
+                var t1 = System.Threading.Tasks.Task.Run(() => connector.TryStartListening("127.0.0.1", portA, out _));
                 if (i % 3 != 0)
                     Thread.SpinWait(rng.Next(1, 50)); // vary the interleaving point
-                var t2 = System.Threading.Tasks.Task.Run(() => connector.StartListening("127.0.0.1", portB));
+                var t2 = System.Threading.Tasks.Task.Run(() => connector.TryStartListening("127.0.0.1", portB, out _));
 
                 // An escape from either start faults a task and rethrows here.
                 await System.Threading.Tasks.Task.WhenAll(t1, t2)
@@ -1196,7 +1336,7 @@ namespace DuneSession.Tests
 
         /// <summary>
         /// Stress pin for the start-racing-dispose window: with Dispose racing a
-        /// StartListening on an already-listening connector, the dispose holds for
+        /// TryStartListening on an already-listening connector, the dispose holds for
         /// the start's claim before it closes, so the start either bails (its
         /// re-read under the claim sees the disposed mark or the listening flag) or
         /// binds on a socket the dispose has not yet closed — it can never throw on
@@ -1207,7 +1347,7 @@ namespace DuneSession.Tests
         /// IsListening false, the socket closed, and no exception from the start.
         /// </summary>
         [Fact]
-        public async Task ServerConnector_StartListening_RacingDispose_NoThrowNoZombie()
+        public async Task ServerConnector_TryStartListening_RacingDispose_NoThrowNoZombie()
         {
             const System.Reflection.BindingFlags NonPubInstance =
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
@@ -1227,9 +1367,9 @@ namespace DuneSession.Tests
                 probe2.Close();
 
                 var connector = new ServerConnector();
-                connector.StartListening("127.0.0.1", port); // establish listening
+                connector.TryStartListening("127.0.0.1", port, out _); // establish listening
 
-                var t1 = System.Threading.Tasks.Task.Run(() => connector.StartListening("127.0.0.1", port2));
+                var t1 = System.Threading.Tasks.Task.Run(() => connector.TryStartListening("127.0.0.1", port2, out _));
                 if (i % 3 != 0)
                     Thread.SpinWait(rng.Next(1, 50)); // vary the interleaving point
                 var t2 = System.Threading.Tasks.Task.Run(() => connector.Dispose());
@@ -1254,17 +1394,18 @@ namespace DuneSession.Tests
 
         /// <summary>
         /// Stress pin for the stop side of the close protocol: StopListening holds
-        /// for a start's claim BEFORE it clears the flag (the flag is the stop's
-        /// only mark, and a start reads it under its own claim — clearing first let
-        /// a racing start read "not listening", bind on the socket about to die,
-        /// and leave the flag true on a closed socket). The race settles to the
-        /// stopped state either way: the start bails (it reads the flag still set
-        /// while the stop holds) or it throws ObjectDisposedException because the
-        /// stop completed first and its bind hit the closed socket — a caller error
-        /// on a dead socket, not a race, and the only escape the protocol allows.
+        /// for a start's claim BEFORE it writes the state (the state is the stop's
+        /// delivery mark, and a start reads it under its own claim — writing "dead"
+        /// first let a racing start that read "never started" bind on the socket
+        /// about to die and write "listening" over it). The race settles to the
+        /// dead state either way: the start bails (it reads the state still
+        /// listening while the stop holds) or it bails at the dead state (the stop
+        /// completed before the start claimed — the state says "dead" permanently,
+        /// so a late start can never drive a bind into the closed socket). No
+        /// exception of any shape escapes: the Try form reports, it never throws.
         /// </summary>
         [Fact]
-        public async Task ServerConnector_StartListening_RacingStop_NoZombie()
+        public async Task ServerConnector_TryStartListening_RacingStop_NoZombie()
         {
             const System.Reflection.BindingFlags NonPubInstance =
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
@@ -1284,12 +1425,12 @@ namespace DuneSession.Tests
                 probe2.Close();
 
                 var connector = new ServerConnector();
-                connector.StartListening("127.0.0.1", port); // establish listening
+                connector.TryStartListening("127.0.0.1", port, out _); // establish listening
 
                 Exception? startEx = null;
                 var t1 = System.Threading.Tasks.Task.Run(() =>
                 {
-                    try { connector.StartListening("127.0.0.1", port2); }
+                    try { connector.TryStartListening("127.0.0.1", port2, out _); }
                     catch (Exception ex) { startEx = ex; }
                 });
                 if (i % 3 != 0)
@@ -1299,12 +1440,9 @@ namespace DuneSession.Tests
                 await System.Threading.Tasks.Task.WhenAll(t1, t2)
                     .WaitAsync(TimeSpan.FromSeconds(10));
 
-                // The only escape the protocol allows from the start is the
-                // caller-error throw on a socket the stop already closed; any
-                // other exception (a close that outran a bind on a live socket)
-                // fails the test.
-                if (startEx != null)
-                    Assert.IsType<ObjectDisposedException>(startEx);
+                // The Try form reports, never throws: the racing start settles as a
+                // plain false, so no exception of any shape may escape the task.
+                Assert.Null(startEx);
 
                 // Never a zombie, no matter which side won: the flag is false
                 // and the socket is closed (the closed probe throws
@@ -1337,7 +1475,7 @@ namespace DuneSession.Tests
 
             // 10.255.255.1 (TEST-NET-3) is non-routable: the connect stays in flight
             // (SYN retransmits) until we abort it — exactly the window to dispose into.
-            bool started = connector.ConnectAsync("10.255.255.1", 9);
+            bool started = connector.TryConnect("10.255.255.1", 9, out _);
             Assert.True(started);
 
             connector.Dispose(); // disposes the in-flight socket, which aborts the op
@@ -1351,21 +1489,24 @@ namespace DuneSession.Tests
         }
 
         /// <summary>
-        /// Pin for the unified failure path (N3/N4): each failure shape fires
-        /// OnConnectFailed exactly once, and a throwing subscriber on the synchronous
-        /// throw path must not propagate out of ConnectAsync.
+        /// Pin for the split failure channels: a synchronous rejection rides the
+        /// return value (no event), an asynchronous refusal rides OnConnectFailed
+        /// exactly once, and a throwing subscriber is never invoked on a
+        /// synchronous rejection.
         /// </summary>
         [Fact]
-        public async Task ClientConnector_FailAttempt_SingleFire_AllPaths()
+        public async Task ClientConnector_TryConnect_FailureShapes_SingleChannel()
         {
-            // Path 1: invalid address — synchronous FormatException throw path.
+            // Path 1: invalid address — synchronous rejection: reported in the
+            // return value, no event (the event is for async outcomes only).
             {
                 var connector = new ClientConnector();
-                var fired = new TaskCompletionSource<SocketError>();
-                connector.OnConnectFailed += err => fired.TrySetResult(err);
-                Assert.False(connector.ConnectAsync("not-an-address", 80));
-                var err = await fired.Task.WaitAsync(TimeSpan.FromSeconds(5));
-                Assert.NotEqual(SocketError.Success, err);
+                SocketError? eventError = null;
+                connector.OnConnectFailed += err => eventError = err;
+                bool started = connector.TryConnect("not-an-address", 80, out SocketError err);
+                Assert.False(started);
+                Assert.Equal(SocketError.InvalidArgument, err);
+                Assert.Null(eventError);
                 connector.Dispose();
             }
 
@@ -1380,7 +1521,7 @@ namespace DuneSession.Tests
                 int count = 0;
                 var fired = new TaskCompletionSource<SocketError>();
                 connector.OnConnectFailed += err => { count++; fired.TrySetResult(err); };
-                Assert.True(connector.ConnectAsync("127.0.0.1", port));
+                Assert.True(connector.TryConnect("127.0.0.1", port, out _));
                 var err = await fired.Task.WaitAsync(TimeSpan.FromSeconds(5));
                 Assert.NotEqual(SocketError.Success, err);
 
@@ -1390,25 +1531,23 @@ namespace DuneSession.Tests
                 connector.Dispose();
             }
 
-            // Path 3: throwing subscriber on the synchronous throw path — the guarded
-            // fire inside FailAttempt must swallow it, not let it escape ConnectAsync.
+            // Path 3: throwing subscriber on the synchronous rejection path — the
+            // rejection fires no event, so the subscriber is never invoked and
+            // nothing escapes TryConnect.
             {
                 var connector = new ClientConnector();
                 connector.OnConnectFailed += _ => throw new InvalidOperationException("subscriber boom");
-                // A throwing subscriber must not propagate out of ConnectAsync (the
-                // guarded fire inside FailAttempt swallows it) — a throw here fails the test.
-                bool result = connector.ConnectAsync("not-an-address", 80);
-                Assert.False(result);
+                Assert.False(connector.TryConnect("not-an-address", 80, out _));
                 connector.Dispose();
             }
         }
 
         /// <summary>
         /// Stress pin for the slipped-in windows (F1/F5): with Dispose racing the
-        /// middle of ConnectAsync, no exception may escape (the raced field read used
+        /// middle of TryConnect, no exception may escape (the raced field read used
         /// to throw an uncaught NullReferenceException) and no live socket may be
         /// orphaned in the field afterwards (the slipped-in socket used to outlive
-        /// both Dispose and the late callback). Each iteration races a ConnectAsync on
+        /// both Dispose and the late callback). Each iteration races a TryConnect on
         /// a thread-pool thread against Dispose from here, with a small random offset
         /// so the interleaving lands at different points in the setup window.
         /// </summary>
@@ -1416,13 +1555,13 @@ namespace DuneSession.Tests
         /// <para>
         /// Also pins the removed ObjectDisposedException window: a start whose
         /// re-read passes must not have a dispose land between the re-read and the
-        /// ConnectAsync issue — Dispose holds for the claim, so that interleaving
+        /// TryConnect issue — Dispose holds for the claim, so that interleaving
         /// no longer exists. An escape from the issue would fault the connect task
         /// and rethrow here.
         /// </para>
         /// </remarks>
         [Fact]
-        public async Task ClientConnector_ConnectAsync_RacingDispose_NoLeakNoThrow()
+        public async Task ClientConnector_TryConnect_RacingDispose_NoLeakNoThrow()
         {
             const System.Reflection.BindingFlags NonPubInstance =
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
@@ -1445,7 +1584,7 @@ namespace DuneSession.Tests
                 connector.OnConnected += _ => connectedFired = true;
                 connector.OnConnectFailed += _ => Interlocked.Increment(ref failCount);
 
-                var connectTask = Task.Run(() => connector.ConnectAsync("127.0.0.1", port));
+                var connectTask = Task.Run(() => connector.TryConnect("127.0.0.1", port, out _));
                 if (i % 3 != 0)
                     Thread.SpinWait(rng.Next(1, 50));
                 connector.Dispose();
@@ -1500,7 +1639,7 @@ namespace DuneSession.Tests
             var tcs1 = new TaskCompletionSource<IConnection>();
             connector.OnConnected += conn => tcs1.TrySetResult(conn);
 
-            bool started1 = connector.ConnectAsync("127.0.0.1", port);
+            bool started1 = connector.TryConnect("127.0.0.1", port, out _);
             Assert.True(started1);
 
             var serverSocket = await Task.Run(() => listener.Accept());
@@ -1539,7 +1678,7 @@ namespace DuneSession.Tests
             connector.OnConnected += conn => tcs2.TrySetResult(conn);
 
             // The reconnect: the success path must dispose what the field held.
-            bool started2 = connector.ConnectAsync("127.0.0.1", port);
+            bool started2 = connector.TryConnect("127.0.0.1", port, out _);
             Assert.True(started2);
 
             var serverSocket2 = await Task.Run(() => listener2.Accept());
@@ -1605,7 +1744,7 @@ namespace DuneSession.Tests
                 var tcs1 = new TaskCompletionSource<IConnection>();
                 connector.OnConnected += conn => tcs1.TrySetResult(conn);
 
-                Assert.True(connector.ConnectAsync("127.0.0.1", port));
+                Assert.True(connector.TryConnect("127.0.0.1", port, out _));
                 var serverSocket = await Task.Run(() => listener.Accept());
                 var conn1 = await tcs1.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -1637,7 +1776,7 @@ namespace DuneSession.Tests
                 // Race the successful reconnect against Dispose with a random
                 // spin offset, as in the other hammers: whichever side wins,
                 // the replaced connection must end disposed.
-                var t1 = Task.Run(() => connector.ConnectAsync("127.0.0.1", port));
+                var t1 = Task.Run(() => connector.TryConnect("127.0.0.1", port, out _));
                 if (i % 3 != 0)
                     Thread.SpinWait(rng.Next(1, 50));
                 var t2 = Task.Run(() => connector.Dispose());

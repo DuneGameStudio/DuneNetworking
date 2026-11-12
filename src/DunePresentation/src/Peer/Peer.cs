@@ -16,8 +16,14 @@ namespace DunePresentation.Peer
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Wraps an <see cref="IConnection"/> with packet registry lookup and optional encryption.
-    /// Provides the main send/receive interface for application-level packet I/O.
+    /// Wraps an <see cref="IConnection"/> with packet registry lookup and optional
+    /// encryption; it is the main send/receive path for application packets.
+    /// </para>
+    /// <para>
+    /// User-supplied code (field serialization, the encryptor) is contracted never to
+    /// throw. The pipeline deliberately contains no try/catch around it: a throw from
+    /// that code propagates to the caller in the ordinary C# way and leaks the segment
+    /// being processed, because nothing in this class releases it on the throw path.
     /// </para>
     /// </remarks>
     public class Peer : IPeer
@@ -26,7 +32,7 @@ namespace DunePresentation.Peer
         private readonly PacketRegistry _packetRegistry;
         private readonly IPacketEncryptor? _encryptor;
 
-        /// <summary>Disposed</summary>
+        /// <summary>Dispose guard: 0 = active, 1 = disposed.</summary>
         private int _disposed;
 
         /// <inheritdoc />
@@ -38,9 +44,9 @@ namespace DunePresentation.Peer
         /// <summary>
         /// Creates a new peer for the given connection.
         /// </summary>
-        /// <param name="connection">An active connection to wrap.</param>
-        /// <param name="packetRegistry">Registry for incoming packet handler lookup.</param>
-        /// <param name="encryptor">Optional encryptor for bidirectional encryption. Null disables encryption.</param>
+        /// <param name="connection">The connection to wrap. Must not be null.</param>
+        /// <param name="packetRegistry">The registry used to look up the factory and handler for each incoming packet ID. Must not be null.</param>
+        /// <param name="encryptor">Optional encryptor used in both directions. Pass null to disable encryption.</param>
         /// <exception cref="ArgumentNullException">Thrown when <paramref name="connection"/> or <paramref name="packetRegistry"/> is null.</exception>
         public Peer(IConnection connection, PacketRegistry packetRegistry, IPacketEncryptor? encryptor = null)
         {
@@ -55,9 +61,10 @@ namespace DunePresentation.Peer
             ushort packetId = packet.PacketId;
             IPacketEncryptor? encryptor = _encryptor;
 
-            // Phase 1: reserve + serialize. OnSerialize is contracted not to throw; the enum
-            // disambiguates pool-exhaustion from serialize-failure so the return value carries
-            // the correct reason (null segment + Error on failure).
+            // Step 1: reserve a send segment from the transport, then serialize the
+            // packet's fields into it. The field code is contracted never to throw, and
+            // the result enum distinguishes pool exhaustion from a field-write failure,
+            // so the return tuple can carry the matching reason (null segment + error).
             SerializeResult result = packet.Serialize(_connection.Transport);
             if (result != SerializeResult.Ok)
             {
@@ -66,23 +73,16 @@ namespace DunePresentation.Peer
                     : PacketError.SerializationError);
             }
 
-            // Phase 2: write the presentation header + encrypt in place. This is presentation-layer
-            // work that previously lived inside ISegmentManager.Serialize via an injected callback;
-            // it now runs here, where a throw can be caught and the segment released (closing the
-            // SEG-1/SEG-2 leak path). Ownership of the segment is ours until we return it.
+            // Step 2: write the 2-byte presentation header, then encrypt in place (the
+            // encrypted region is a prefix of the same segment, so no second buffer is
+            // needed). The encryptor is contracted never to throw: a throw would escape
+            // to the caller with the segment still unreleased — a pool leak nothing in
+            // this method can undo.
             Segment seg = packet.segment;
             Span<byte> span = seg.Memory.Span;
-            try
-            {
-                PresentationHeader.Write(span, packetId);
-                if (encryptor != null)
-                    encryptor.Encrypt(span.Slice(0, ((IPacket)packet).PacketSize), span);
-            }
-            catch (Exception)
-            {
-                seg.Release();
-                return (null, PacketError.SerializationError);
-            }
+            PresentationHeader.Write(span, packetId);
+            if (encryptor != null)
+                encryptor.Encrypt(span.Slice(0, ((IPacket)packet).PacketSize), span);
 
             return (seg, PacketError.None);
         }
@@ -92,58 +92,42 @@ namespace DunePresentation.Peer
         {
             var span = segment.Memory.Span;
 
-            // Stage 1: Decrypt
-            try
-            {
-                _encryptor?.Decrypt(span, span);
-            }
-            catch
-            {
-                segment.Release();
-                return (null, PacketError.DecryptError);
-            }
+            // Step 1: decrypt in place. The encryptor is contracted never to throw: a
+            // throw escapes to the caller with the segment unreleased — a pool leak
+            // nothing in this method can undo.
+            _encryptor?.Decrypt(span, span);
 
-            // Stage 2: Read header
+            // Step 2: read the 2-byte presentation header. The read throws on a segment
+            // smaller than the header — a protocol violation, since a well-formed packet
+            // always carries its header.
             ushort packetId;
-            try
-            {
-                PresentationHeader.Read(span, out packetId);
-            }
-            catch
-            {
-                segment.Release();
-                return (null, PacketError.SerializationError);
-            }
 
-            // Stage 3: Registry lookup
+            PresentationHeader.Read(span, out packetId);
+
+            // Step 3: look up the packet ID in the registry. On a miss no later step will
+            // consume the segment, so release it here before returning.
             if (!_packetRegistry.TryGetEntry(packetId, out Entry entry))
             {
                 segment.Release();
                 return (null, PacketError.RegistryError);
             }
 
-            // Stage 4: Factory + deserialize (factory exceptions propagate)
+            // Step 4: create the packet via the registry's factory, then deserialize its
+            // fields. The constructor and the field code are contracted never to throw; a
+            // throw escapes to the caller and leaks the segment, because the release inside
+            // Deserialize only runs after the user code returns. PacketSize is set to the
+            // full segment length (header included); the packet's OnDeserialize subtracts
+            // the header size when it slices out the field span.
             IPacket packet = entry.Factory();
             packet.segment = segment;
             packet.PacketSize = span.Length;
 
-            // packet.Deserialize() internally calls ISegmentManager.Deserialize() which releases the
-            // segment on the success/failure return path. Per the ISegmentManager contract,
-            // OnDeserialize must not throw; but if an implementor violates that contract, the
-            // throw escapes Deserialize before the inner release runs — so guard it here and
-            // release the segment ourselves (closing the SEG-3 leak at the nearest site rather
-            // than relying on every outer caller being defensive).
-            try
+            // Deserialize releases the segment after OnDeserialize returns, whether the
+            // read succeeded or failed — so on both return paths below the segment is
+            // already back in the pool.
+            var deserializeResult = packet.Deserialize();
+            if (deserializeResult != DeserializeResult.Ok)
             {
-                var deserializeResult = packet.Deserialize();
-                if (deserializeResult != DeserializeResult.Ok)
-                {
-                    return (null, PacketError.DeserializeError);
-                }
-            }
-            catch (Exception)
-            {
-                segment.Release();
                 return (null, PacketError.DeserializeError);
             }
 

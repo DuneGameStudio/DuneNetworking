@@ -28,7 +28,9 @@ namespace DunePresentation.Packet
     /// <remarks>
     /// <para>
     /// Used by <see cref="Peer"/> to route incoming packets. Each packet ID is
-    /// registered once with a factory and handler delegate. Lookups are concurrent-safe.
+    /// registered once with a factory and a handler delegate. Registration,
+    /// unregistration, and lookups are all safe to run concurrently (the backing
+    /// store is a <see cref="ConcurrentDictionary{TKey,TValue}"/>).
     /// </para>
     /// </remarks>
     public sealed class PacketRegistry
@@ -40,7 +42,7 @@ namespace DunePresentation.Packet
         /// </summary>
         /// <typeparam name="T">The packet type, which must have a parameterless constructor.</typeparam>
         /// <param name="packetId">The unique packet identifier.</param>
-        /// <param name="serviceProvider">The application's service provider. The factory is invoked with this provider immediately.</param>
+        /// <param name="serviceProvider">The application's service provider; <paramref name="handlerFactory"/> is invoked with it immediately.</param>
         /// <param name="handlerFactory">A factory that receives the <paramref name="serviceProvider"/> and returns the handler delegate.</param>
         /// <exception cref="ArgumentNullException">Thrown when <paramref name="handlerFactory"/> is null.</exception>
         /// <exception cref="InvalidOperationException">Thrown if <paramref name="packetId"/> is already registered.</exception>
@@ -49,7 +51,8 @@ namespace DunePresentation.Packet
             if (handlerFactory == null)
                 throw new ArgumentNullException(nameof(handlerFactory));
 
-            // Invoke factory with the provided service provider, capture the handler closure
+            // Invoke the handler factory with the provided service provider and
+            // capture the resulting handler closure.
             Action<T> handler = handlerFactory(serviceProvider);
 
             if (!_entries.TryAdd(packetId, new Entry(

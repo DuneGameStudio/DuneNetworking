@@ -13,20 +13,21 @@ namespace DuneSession.SocketConnectors
     /// <remarks>
     /// <para>
     /// Wraps a connected socket and provides the <see cref="Transport"/> property for
-    /// sending and receiving data. Reports connection state via <see cref="IsConnected"/>
-    /// and closes the socket when asked via <see cref="DisconnectAsync"/> — it never
-    /// decides what a transport failure means; that is the application's job.
+    /// sending and receiving data. Reports connection state through
+    /// <see cref="IsConnected"/> and closes the socket when asked via
+    /// <see cref="DisconnectAsync"/> — it never decides what a transport failure
+    /// means; that is the application's job.
     /// </para>
     /// <para>
     /// <see cref="Dispose"/> is safe to call at any time. The socket's close
     /// follows the close protocol: it holds for any start that is between
-    /// claiming and issuing — a transport operation, or a disconnect (a close
+    /// claiming and issuing — a transport operation or a disconnect (a close
     /// must never outrun that window) — then closes, running over in-flight
-    /// operations — aborting one is safe, and for a receive against a live
-    /// peer the close is what settles it. A disconnect that is already in the
-    /// kernel settles through its own completion, which runs the same close;
-    /// Dispose's hold ends the moment the caller's socket call returns, so the
-    /// handle is released then, not when the peer answers.
+    /// operations; aborting one is safe, and for a receive against a live peer
+    /// the close is what settles it. A disconnect that is already in the kernel
+    /// settles through its own completion, which runs the same close; Dispose's
+    /// hold ends the moment the caller's socket call returns, so the handle is
+    /// released then, not when the peer answers.
     /// </para>
     /// </remarks>
     public class Connection : IConnection
@@ -53,6 +54,8 @@ namespace DuneSession.SocketConnectors
         public bool IsConnected => connectedState == 1 && Transport.IsConnected;
 
         /// <inheritdoc />
+        // Subscribers must not throw: on the FIN-completion thread a throw escapes
+        // the callback and crashes the process.
         public event Action? Disconnected;
 
         /// <summary>Disconnect report guard: 0 = not yet reported, 1 = reported.</summary>
@@ -65,6 +68,8 @@ namespace DuneSession.SocketConnectors
         /// owner-protocol members (not part of the app-facing interface).</summary>
         private readonly Transport transport;
 
+        // The event object for the graceful disconnect (a SocketAsyncEventArgs):
+        // a connection disconnects at most once, so one object serves it.
         private readonly SocketAsyncEventArgs disconnectAsyncSocketAsyncEventArgs;
         /// <summary>Dispose guard: 0 = active, 1 = disposed.</summary>
         private int _disposed;
@@ -122,18 +127,18 @@ namespace DuneSession.SocketConnectors
             if (Interlocked.CompareExchange(ref disconnectingState, 1, 0) != 0)
                 return;
 
-            // Mutual confirmation against Dispose: Dispose holds for our claim
-            // before it closes the socket, and we re-read the disposed flag
-            // after claiming. At least one side always sees the other, so a
+            // Mutual confirmation against Dispose: Dispose holds for this claim
+            // before it closes the socket, and the start re-reads the disposed
+            // flag after claiming. At least one side always sees the other, so a
             // start that proceeds is guaranteed to find the socket alive. If
             // Dispose already ran, the transport is marked dead, so this start
             // never reaches a socket call. This bail still closes the socket in
             // that case — it may reach the close before Dispose's own close
             // does, and racing closes are harmless (closing an already-closed
             // socket is a no-op) — so it marks the transport first: the mark
-            // must precede every close, and Dispose's mark may not have run
-            // yet on its own thread. Clearing the slot first releases any
-            // Dispose holding for our claim; the bail's close is the owner's.
+            // must precede every close, and Dispose's mark may not have run yet
+            // on its own thread. Clearing the slot first releases any Dispose
+            // holding for this claim; the bail's close is the owner's.
             if (Volatile.Read(ref _disposed) == 1)
             {
                 Interlocked.Exchange(ref disconnectingState, 0);
@@ -144,9 +149,9 @@ namespace DuneSession.SocketConnectors
 
             disconnectAsyncSocketAsyncEventArgs.DisconnectReuseSocket = false;
 
-            // The re-reads passed: no mark is set and the socket is live.
-            // Issue with the claim still held — a close waits for the claimed
-            // state, so no close can land between here and the issue.
+            // The re-reads passed: no mark is set and the socket is live. Issue
+            // with the claim still held — a close waits for the claimed state,
+            // so no close can land between here and the issue.
             bool pending = socket.DisconnectAsync(disconnectAsyncSocketAsyncEventArgs);
 
             // The socket call has returned: the window is over. This
@@ -201,11 +206,9 @@ namespace DuneSession.SocketConnectors
             if (Interlocked.Exchange(ref _disconnected, 1) != 0)
                 return;
 
-            try
-            {
-                Disconnected?.Invoke();
-            }
-            catch { }
+            // Contract: the subscriber must not throw; on the FIN-completion thread
+            // a throw escapes the callback and crashes the process.
+            Disconnected?.Invoke();
         }
 
         /// <summary>
@@ -275,7 +278,8 @@ namespace DuneSession.SocketConnectors
             // precisely what settles it, so it must not wait for that either.
             transport.CloseSocket();
 
-            // Force completion: an awaiter of Disconnected must never hang.
+            // Force completion: a consumer awaiting the Disconnected report must
+            // never hang.
             ReportDisconnected();
         }
     }

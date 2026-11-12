@@ -6,8 +6,8 @@ namespace DuneTransport.BufferManager.Interface
     /// Result of a serialization lifecycle orchestrated by <see cref="ISegmentManager.Serialize"/>.
     /// </summary>
     /// <remarks>
-    /// Distinguishes three outcomes that were previously collapsed into a single <c>bool</c>
-    /// (<c>true</c>/<c>false</c>), enabling callers to report the correct <see cref="PacketError"/>.
+    /// Distinguishes the three serialization outcomes so callers can report the correct
+    /// <see cref="PacketError"/> for each.
     /// </remarks>
     public enum SerializeResult
     {
@@ -35,7 +35,7 @@ namespace DuneTransport.BufferManager.Interface
     /// Result of a deserialization lifecycle orchestrated by <see cref="ISegmentManager.Deserialize"/>.
     /// </summary>
     /// <remarks>
-    /// Distinguishes the two outcomes previously collapsed into a single <c>bool</c>.
+    /// Distinguishes the two deserialization outcomes.
     /// </remarks>
     public enum DeserializeResult
     {

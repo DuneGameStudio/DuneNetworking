@@ -7,12 +7,16 @@ namespace DunePresentation.Encryption.Interface
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Implementations must support in-place operations where source and destination
-    /// spans reference the same memory region. The encryptor is responsible for any
-    /// state management (keys, IVs, nonces) required for correct operation.
+    /// Implementations must support in-place operations, where the source and
+    /// destination spans reference the same memory region. The encryptor owns any
+    /// state management (keys, initialization vectors, nonces) required for
+    /// correct operation.
     /// </para>
     /// <para>
-    /// Used by <see cref="Peer"/> during serialization (encrypt) and deserialization (decrypt).
+    /// Used by <see cref="Peer"/> during serialization (encrypt) and deserialization
+    /// (decrypt). Implementations are contracted never to throw: the peer's pipeline
+    /// runs them without containment, so a throw propagates to the caller and leaks
+    /// the segment being processed.
     /// </para>
     /// </remarks>
     public interface IPacketEncryptor

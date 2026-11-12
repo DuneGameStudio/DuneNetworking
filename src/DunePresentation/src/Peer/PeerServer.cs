@@ -16,18 +16,24 @@ namespace DunePresentation.Peer
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Wraps a <see cref="IServerConnector"/> with packet registry and optional encryption.
-    /// On each accepted connection, creates a <see cref="Peer"/> and fires <see cref="OnPeerConnected"/>.
+    /// Wraps an <see cref="IServerConnector"/> with the packet registry and optional
+    /// encryption. For each accepted connection, a <see cref="Peer"/> is created and
+    /// raised through <see cref="OnPeerConnected"/>.
     /// </para>
     /// <para>
-    /// Uses an encryptor factory pattern: the factory is invoked per-connection, allowing
-    /// each peer to have independent encryption state.
+    /// <see cref="TryStartListening"/> is a pure pass-through: the return value and out
+    /// parameter carry the synchronous answer, and the relayed events carry only the
+    /// asynchronous network outcome.
+    /// </para>
+    /// <para>
+    /// The encryptor comes from a factory invoked once per connection, so each peer gets
+    /// its own independent encryption state.
     /// </para>
     /// </remarks>
     public sealed class PeerServer : IPeerServer
     {
         private readonly PacketRegistry _packetRegistry;
-        /// <summary>Factory to create per-connection encryptors (nullable).</summary>
+        /// <summary>Factory that creates one encryptor per connection. Null disables encryption.</summary>
         private readonly Func<IPacketEncryptor>? _encryptorFactory;
         private readonly IServerConnector _serverConnector;
 
@@ -37,6 +43,8 @@ namespace DunePresentation.Peer
         /// <inheritdoc />
         public bool IsListening => _serverConnector.IsListening;
 
+        // Subscribers run on socket-completion threads and must not throw:
+        // a throw escapes the completion callback and crashes the process.
         public event Action<IPeer>? OnPeerConnected;
         public event Action<SocketError>? OnAcceptFailed;
 
@@ -45,8 +53,8 @@ namespace DunePresentation.Peer
         /// </summary>
         /// <param name="packetRegistry">Registry for incoming packet handler lookup.</param>
         /// <param name="encryptorFactory">Optional factory invoked per-connection to create encryptors.</param>
-        /// <param name="server">Optional connector (creates a <see cref="ServerConnector"/> if null). A supplied connector governs its own pool configuration.</param>
-        /// <param name="options">Optional segment pool sizing applied to the internally-created connector (ignored when <paramref name="server"/> is supplied).</param>
+        /// <param name="server">Optional connector to use. When null, a <see cref="ServerConnector"/> is created internally with the default listen backlog. A supplied connector owns its own segment pool configuration, so <paramref name="options"/> has no effect on it.</param>
+        /// <param name="options">Optional segment pool sizing for the internally-created connector. Ignored when <paramref name="server"/> is supplied.</param>
         /// <exception cref="ArgumentNullException">Thrown when <paramref name="packetRegistry"/> is null.</exception>
         public PeerServer(PacketRegistry packetRegistry, Func<IPacketEncryptor>? encryptorFactory = null, IServerConnector? server = null, TransportOptions? options = null)
         {
@@ -55,12 +63,12 @@ namespace DunePresentation.Peer
 
             _serverConnector = server ?? new ServerConnector(128, options);
             _serverConnector.OnClientConnected += HandleClientConnected;
-            _serverConnector.OnAcceptFailed += HandleAcceptFailed;
+            _serverConnector.OnAcceptFailed += RelayAcceptFailed;
         }
 
         /// <inheritdoc />
-        public void StartListening(string address, int port)
-            => _serverConnector.StartListening(address, port);
+        public bool TryStartListening(string address, int port, out SocketError error)
+            => _serverConnector.TryStartListening(address, port, out error);
 
         /// <inheritdoc />
         public void StopListening()
@@ -71,41 +79,25 @@ namespace DunePresentation.Peer
             => _serverConnector.AcceptConnection();
 
         /// <summary>
-        /// Creates a <see cref="Peer"/> for an accepted connection and fires <see cref="OnPeerConnected"/>.
-        /// A throwing factory or subscriber disposes the peer and connection instead of propagating.
+        /// Connector event handler: creates a <see cref="Peer"/> for the accepted
+        /// connection and raises <see cref="OnPeerConnected"/>. Runs on the
+        /// socket-completion thread — a throw from the encryptor factory or a
+        /// subscriber escapes the connector's completion callback and crashes the
+        /// process, so neither may throw.
         /// </summary>
         private void HandleClientConnected(IConnection connection)
         {
-            IPeer? peer = null;
-            try
-            {
-                IPacketEncryptor? encryptor = _encryptorFactory?.Invoke();
-                peer = new Peer(connection, _packetRegistry, encryptor);
-                OnPeerConnected?.Invoke(peer);
-            }
-            catch
-            {
-                // A throwing factory or subscriber means the peer was not taken:
-                // dispose what was created so nothing live is left behind. The
-                // connector below guards its own fire and disposes the connection
-                // too; both disposes are idempotent, so the double is a no-op.
-                peer?.Dispose();
-                connection.Dispose();
-            }
+            IPacketEncryptor? encryptor = _encryptorFactory?.Invoke();
+            IPeer peer = new Peer(connection, _packetRegistry, encryptor);
+            OnPeerConnected?.Invoke(peer);
         }
 
-        /// <summary>Forwards accept failures to <see cref="OnAcceptFailed"/>.</summary>
-        private void HandleAcceptFailed(SocketError error)
-        {
-            try
-            {
-                OnAcceptFailed?.Invoke(error);
-            }
-            catch
-            {
-                // Subscriber throw is absorbed: no connection exists to dispose.
-            }
-        }
+        /// <summary>
+        /// Relays accept failures to <see cref="OnAcceptFailed"/> subscribers. No
+        /// containment: a throwing subscriber propagates from the completion callback.
+        /// </summary>
+        private void RelayAcceptFailed(SocketError error)
+            => OnAcceptFailed?.Invoke(error);
 
         /// <summary>
         /// Unsubscribes from connector events and releases the underlying server. Idempotent.
@@ -115,7 +107,7 @@ namespace DunePresentation.Peer
             if (Interlocked.Exchange(ref _disposed, 1) == 1) return;
 
             _serverConnector.OnClientConnected -= HandleClientConnected;
-            _serverConnector.OnAcceptFailed -= HandleAcceptFailed;
+            _serverConnector.OnAcceptFailed -= RelayAcceptFailed;
             _serverConnector.Dispose();
         }
     }

@@ -113,10 +113,10 @@ topology, no persistence, and no configuration surface.
 
 ### 3.5 Scenarios
 
-1. **Happy path:** `PeerClient.ConnectAsync` → `OnPeerConnected(peer)` → app wires
+1. **Happy path:** `PeerClient.TryConnect` → `OnPeerConnected(peer)` → app wires
    `peer.Connection.Transport` events → `SerializeAndEncrypt` + `Send` out; `OnPacketReceived` in →
    `DecryptAndDeserialize` → handler.
-2! **Server:** `PeerServer.StartListening` + `AcceptConnection` (one-shot) → a `Peer` per client.
+2! **Server:** `PeerServer.TryStartListening` + `AcceptConnection` (one-shot) → a `Peer` per client.
 3! **Graceful close:** `peer.DisconnectAsync()` (or the peer's `DisconnectAsync`) → FIN (the 'finish' flag) →
    `Connection.Disconnected` fires exactly once.
 4! **Error handling:** pool exhausted, malformed frame, socket reset — surfaced as
@@ -154,9 +154,11 @@ topology, no persistence, and no configuration surface.
 ## 6. Cross-Cutting Architectural Concerns
 
 - **Segment ownership transfer.** The single most important invariant: exactly one owner at a time,
-  release is idempotent, and every exit path (success, failure, dispose race, handler throw) returns
-  the segment to its pool. This is why `Release()`/`ReleaseMemory` are idempotent and why the
-  transport's dispose "sweeps" in-flight fields.
+  release is idempotent, and every library exit path (success, failure, dispose race) returns the
+  segment to its pool. User callbacks (handlers, factories, subscribers) are contracted not to
+  throw; a throw is a documented foot gun that propagates — on a socket-completion thread it
+  crashes the process — rather than being contained. This is why `Release()`/`ReleaseMemory` are
+  idempotent and why the transport's dispose "sweeps" in-flight fields.
 - **The close protocol.** The lock-free teardown (see §3.2 and [`Decision-Log.md`](Decision-Log.md))
   is the highest-complexity area and the main maintenance risk. Its guarantee is that teardown is
   exactly-once, cannot deadlock, and never leaves an awaiter hanging.
@@ -175,9 +177,10 @@ The library makes a small number of deliberate choices that trade one quality fo
 stated here as *why*; the full evidence and change history is in [`Decision-Log.md`](Decision-Log.md).
 
 - **Segment ownership is a first-class invariant.** Every `Segment` has exactly one owner at a
-  time; `Release()` is idempotent; every exit path — success, failure, dispose race, a throwing
-  handler — returns the segment to its pool. This is what makes the pooling leak-free and is the
-  single most important rule to preserve in any change.
+  time; `Release()` is idempotent; every library exit path — success, failure, dispose race —
+  returns the segment to its pool. User callbacks must not throw (a documented foot gun, not a
+  contained failure). This is what makes the pooling leak-free and is the single most important
+  rule to preserve in any change.
 - **A packet *is* a segment owner (`IPacket : ISegmentManager`).** The coupling is deliberate, not
   accidental: the segment/pool are genuinely a transport concern, and serialization is zero-copy
   precisely because a packet writes into the destination transport's own pooled buffer. The cost — a

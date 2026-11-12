@@ -109,11 +109,11 @@ namespace DuneTransport.BufferManager.Interface
         /// <para>
         /// This method only orchestrates reserve → serialize → handoff. It deliberately performs
         /// no post-serialization work (no header writing, no encryption): those are caller
-        /// concerns that belong above the transport layer. Keeping them out of this protected
-        /// region ensures the segment lifecycle is the only thing this method owns, and the only
-        /// thing that can throw inside it is <see cref="OnSerialize"/> — which the contract above
-        /// forbids from throwing. Callers that post-process the returned segment must guard their
-        /// own work and release on failure.
+        /// concerns that belong above the transport layer. Keeping them out of this method
+        /// ensures the segment lifecycle is the only thing it owns, and — with the
+        /// MUST-NOT-THROW contract above on <see cref="OnSerialize"/> — nothing inside it can
+        /// throw. Callers that post-process the returned segment must guard their own work and
+        /// release on failure.
         /// </para>
         /// </remarks>
         SerializeResult Serialize(ITransport transport)

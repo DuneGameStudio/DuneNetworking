@@ -23,7 +23,8 @@ All tests use real sockets on loopback. No external dependencies.
 - `ServerConnector_AcceptConnection_*` - Real client, multiple clients, with data
 - `ServerConnector_AcceptConnection_ObjectDisposed_FiresAcceptFailed` - Error injection via reflection
 - `ServerConnector_ProcessAccept_ErrorCompletion_FiresAcceptFailed` - Real `ProcessAccept` else branch via reflection (see below)
-- `ClientConnector_ConnectAsync_*` - Invalid address (FormatException), refused (SocketException)
+- `ClientConnector_TryConnect_*` - Invalid address/port/IPv6 literal (false + InvalidArgument, no event), refused (async event)
+- `ServerConnector_TryStartListening_*` - Invalid address/port/IPv6 literal (false + InvalidArgument, no event, socket untouched), bind failure (socket closed, death recorded in state, OS error reported), retry after failure (clean state rejection, never throws)
 - `ClientConnector_Dispose_*` - Idempotent, unsubscribes from connector
 - Concurrency tests: `Connection_DisconnectAsync_RacingWithDispose`, `ServerConnector_AcceptConnection_RacingWithStopListening`
 

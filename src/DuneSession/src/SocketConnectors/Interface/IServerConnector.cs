@@ -8,9 +8,9 @@ namespace DuneSession.SocketConnectors.Interface
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Listens for and accepts inbound TCP connections. Uses a one-shot accept model:
-    /// after each accepted connection, the application must call <see cref="AcceptConnection"/>
-    /// again to accept the next connection.
+    /// Listens for and accepts inbound TCP connections. Accepts are one-shot: after
+    /// each accepted connection, the application calls <see cref="AcceptConnection"/>
+    /// again to accept the next one.
     /// </para>
     /// </remarks>
     public interface IServerConnector : IDisposable
@@ -47,15 +47,17 @@ namespace DuneSession.SocketConnectors.Interface
         /// <summary>
         /// Begins listening for incoming connections on the specified endpoint.
         /// </summary>
-        /// <param name="address">The IP address to bind to.</param>
-        /// <param name="port">The port to listen on.</param>
+        /// <param name="address">The IPv4 address to bind to. Must parse as an IPv4 literal — hostnames and IPv6 literals are not accepted.</param>
+        /// <param name="port">The port to listen on, 0 through 65535.</param>
+        /// <param name="error">On <c>false</c>, why the socket is not listening: <c>SocketError.InvalidArgument</c> (bad address or port), the OS error of the bind or listen, or the catch-all <c>SocketError</c> value for a state rejection (already listening, another start in progress, or disposed — the netstandard2.1 <c>SocketError</c> set, which mirrors the Windows Sockets API error codes, has no "already" member, so state rejections share the catch-all; <see cref="IsListening"/> is the authoritative state check). On <c>true</c>, <c>SocketError.Success</c>.</param>
+        /// <returns><c>true</c> if the socket is listening (then call <see cref="AcceptConnection"/>); <c>false</c> if the start was declined or the bind failed — the reason is in <paramref name="error"/>. No event fires for a declined start; the out parameter is its only failure channel.</returns>
         /// <remarks>
         /// <para>
-        /// After calling this, call <see cref="AcceptConnection"/> to begin accepting connections.
-        /// Calling <see cref="StartListening"/> while already listening has no effect.
+        /// Calling <see cref="TryStartListening"/> while already listening returns <c>false</c>
+        /// with the catch-all <c>SocketError</c> value.
         /// </para>
         /// </remarks>
-        void StartListening(string address, int port);
+        bool TryStartListening(string address, int port, out SocketError error);
 
         /// <summary>
         /// Accepts the next pending client connection.

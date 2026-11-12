@@ -39,8 +39,9 @@ namespace DuneSession.SocketConnectors.Interface
         /// <summary>
         /// Raised exactly once when the connection is definitively over: the graceful
         /// disconnect completed, or the connection was disposed (force completion, so
-        /// an awaiter can never hang). A report, not a wait — the connection owns no
-        /// threads, timers, or tasks; consumers add their own timeout in their layer.
+        /// a consumer awaiting the report can never hang). A report, not a wait — the
+        /// connection owns no threads, timers, or tasks; consumers add their own
+        /// timeout in their own layer.
         /// </summary>
         event Action? Disconnected;
     }

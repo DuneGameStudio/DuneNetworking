@@ -8,27 +8,27 @@ using DuneTransport.Transport.Interface;
 namespace DuneTransport.Transport
 {
     /// <summary>
-    /// Asynchronous socket transport with two-phase (header/payload) receive and length-prefixed send.
+    /// Asynchronous socket transport with length-prefixed send and two-phase (header/payload) receive.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Wraps a connected <see cref="Socket"/> and provides an event-based API for
-    /// sending and receiving framed packets. Each packet is framed with a 2-byte
-    /// little-endian length prefix.
+    /// Wraps a connected <see cref="Socket"/> behind an event-based API for sending and
+    /// receiving framed packets. Every packet is framed with a 2-byte little-endian
+    /// length prefix.
     /// </para>
     /// <para>
-    /// <b>Receive flow:</b> Reads the 2-byte header first, allocates a correctly-sized
-    /// payload segment, then receives the payload. Delivers the complete segment to
+    /// <b>Receive flow:</b> reads the 2-byte header first, reserves a correctly sized
+    /// payload segment, receives the payload, and delivers the complete segment to
     /// the subscriber via <see cref="OnPacketReceived"/>.
     /// </para>
     /// <para>
-    /// <b>Send flow:</b> Application reserves a segment via <see cref="TryReserveSendPacket"/>,
-    /// writes payload data, calls <see cref="SendAsync"/> which prepends the length header
-    /// and transmits.
+    /// <b>Send flow:</b> the application reserves a segment via
+    /// <see cref="TryReserveSendPacket"/>, writes the payload, then calls
+    /// <see cref="SendAsync"/>, which prepends the length header and transmits.
     /// </para>
     /// <para>
-    /// Only one send and one receive may be in flight simultaneously. Operations are
-    /// guarded with <see cref="Interlocked.CompareExchange"/> flags.
+    /// At most one send and one receive are in flight at a time; the operation
+    /// slots are guarded with <see cref="Interlocked.CompareExchange"/> claims.
     /// </para>
     /// </remarks>
     public class Transport : ITransport
@@ -38,60 +38,64 @@ namespace DuneTransport.Transport
 
         private readonly Socket socket;
 
-        /// <summary>Segment pool for receiving data. Segments are leased during receive operations.</summary>
+        /// <summary>Segment pool that supplies receive operations with storage; a segment is leased per in-flight receive.</summary>
         private SegmentedBuffer receiveBuffer { get; }
 
-        /// <summary>Segment pool for sending data. Segments are leased for outgoing packets.</summary>
+        /// <summary>Segment pool that supplies send operations with storage; a segment is leased per outgoing packet.</summary>
         private SegmentedBuffer sendBuffer { get; }
 
-        /// <summary>Tracks whether we are currently receiving a header or payload.</summary>
+        /// <summary>The phase an in-flight receive is in: the 2-byte header, or the payload that header announced.</summary>
         private enum ReceivePhase { Header, Payload }
 
-        /// <summary>The segment currently being filled during an active receive operation.</summary>
+        /// <summary>The segment an in-flight receive is filling; default when no receive is active.</summary>
         private Segment currentReceivingSegment;
 
-        /// <summary>The segment currently being transmitted during an active send operation.</summary>
+        /// <summary>The segment an in-flight send is transmitting; default when no send is active.</summary>
         private Segment currentSendingSegment;
 
-        /// <summary>Current phase of the multi-part receive operation.</summary>
+        /// <summary>Phase of the in-flight receive (header or payload).</summary>
         private ReceivePhase phase;
 
-        /// <summary>Bytes received in the current phase.</summary>
+        /// <summary>Bytes received so far in the current phase.</summary>
         private int receivedBytes;
 
-        /// <summary>Total bytes expected for the current phase.</summary>
+        /// <summary>Bytes the current phase must receive in total (2 for the header, the declared length for the payload).</summary>
         private int expectedBytes;
 
+        /// <summary>Asynchronous I/O event object (<see cref="SocketAsyncEventArgs"/>) for the send direction.</summary>
         private readonly SocketAsyncEventArgs sendEventArgs;
+
+        /// <summary>Asynchronous I/O event object (<see cref="SocketAsyncEventArgs"/>) for the receive direction.</summary>
         private readonly SocketAsyncEventArgs receiveEventArgs;
 
-        /// <summary>Dispose guard: 0 = not disposed, 1 = disposed. Accessed via <see cref="Volatile.Read"/>.</summary>
+        /// <summary>Dispose mark: 0 = live, 1 = disposed. Set once, never cleared; read with <see cref="Volatile.Read"/>.</summary>
         private int _disposed;
 
-        /// <summary>Send operation state: 0 = none, 1 = claimed (a start is
+        /// <summary>Send operation slot: 0 = idle, 1 = claimed (a start is
         /// running: between claiming and issuing — a transient with no blocking
-        /// call inside), 2 = in flight (issued, awaiting its completion).
-        /// The state is cleared only by the operation's completion (or the
-        /// bail that settles instead of issuing), never by <see cref="Dispose"/>.
-        /// The two nonzero values matter: a socket close may never outrun a
-        /// state-1 starter (it would throw in the issue), but may safely run
-        /// over a state-2 operation — and for a receive against a live peer,
-        /// the close is what settles it, so a close must never wait for
-        /// state 2 either.</summary>
+        /// call inside), 2 = in flight (issued, awaiting completion). The slot
+        /// is cleared only by the operation's own completion (or the bail that
+        /// settles instead of issuing), never by <see cref="Dispose"/>. The two
+        /// nonzero values matter: a socket close may never outrun a state-1
+        /// starter (its issue would throw on the closed socket), but may safely
+        /// run over a state-2 operation — and for a receive against a live
+        /// peer, the close is what settles the operation, so a close must never
+        /// wait for state 2 either.</summary>
         private int _sendOpState;
 
-        /// <summary>Receive operation state: 0 = none, 1 = claimed (a start is
+        /// <summary>Receive operation slot: 0 = idle, 1 = claimed (a start is
         /// running: between claiming and issuing — a transient with no blocking
-        /// call inside), 2 = in flight (issued, awaiting its completion).
-        /// The state is cleared only by the operation's completion (or the
-        /// bail that settles instead of issuing), never by <see cref="Dispose"/>.
-        /// The two nonzero values matter: a socket close may never outrun a
-        /// state-1 starter (it would throw in the issue), but may safely run
-        /// over a state-2 operation — and for a receive against a live peer,
-        /// the close is what settles it, so a close must never wait for
-        /// state 2 either.</summary>
+        /// call inside), 2 = in flight (issued, awaiting completion). The slot
+        /// is cleared only by the operation's own completion (or the bail that
+        /// settles instead of issuing), never by <see cref="Dispose"/>. The two
+        /// nonzero values matter: a socket close may never outrun a state-1
+        /// starter (its issue would throw on the closed socket), but may safely
+        /// run over a state-2 operation — and for a receive against a live
+        /// peer, the close is what settles the operation, so a close must never
+        /// wait for state 2 either.</summary>
         private int _receiveOpState;
 
+        /// <summary>Connection mark: true while the socket is believed connected. Cleared by this transport's own error and FIN branches, and by <see cref="MarkDisconnected"/>.</summary>
         private volatile bool _isConnected = true;
 
         /// <inheritdoc />
@@ -121,25 +125,35 @@ namespace DuneTransport.Transport
         /// <inheritdoc />
         public bool SendArmed => Volatile.Read(ref _sendOpState) != 0;
 
+        // All transport events run on socket-completion threads. Subscribers must not
+        // throw: a throw escapes the completion callback and crashes the process.
+
+        /// <summary>Raised when a packet send completes; the segment is already released back to the pool.</summary>
         public event Action<ITransport>? OnPacketSent;
+
+        /// <summary>Raised when a send fails; segment ownership transfers to the subscriber, which retries or releases.</summary>
         public event Action<ITransport, Segment, TransportError>? OnPacketSendFailed;
 
+        /// <summary>Raised when a complete packet arrives; segment ownership transfers to the subscriber, which must release it.</summary>
         public event Action<ITransport, Segment>? OnPacketReceived;
+
+        /// <summary>Raised when a receive fails; any leased segment has already been released.</summary>
         public event Action<ITransport, TransportError>? OnPacketReceiveFailed;
 
         /// <summary>
-        /// Creates a new transport for the given socket.
+        /// Creates a transport for an already-connected socket, with default pool sizing.
         /// </summary>
         /// <param name="socket">An already-connected socket to wrap.</param>
         /// <exception cref="ArgumentNullException">Thrown when <paramref name="socket"/> is null.</exception>
         /// <remarks>
         /// <para>
-        /// Initializes separate segment pools for sending and receiving. Registers
-        /// async I/O completion handlers on <see cref="SocketAsyncEventArgs"/> instances.
+        /// Creates one segment pool each for sending and receiving, and registers the
+        /// asynchronous I/O completion handlers on per-direction
+        /// <see cref="SocketAsyncEventArgs"/> instances.
         /// </para>
         /// <para>
-        /// The socket should be connected before calling this constructor.
-        /// Call <see cref="Dispose"/> to release resources when the transport is no longer needed.
+        /// The socket must already be connected. Call <see cref="Dispose"/> when the
+        /// transport is no longer needed.
         /// </para>
         /// </remarks>
         public Transport(Socket socket) : this(socket, new TransportOptions())
@@ -147,7 +161,7 @@ namespace DuneTransport.Transport
         }
 
         /// <summary>
-        /// Creates a new transport for the given socket with custom segment pool sizing.
+        /// Creates a transport for an already-connected socket with custom segment pool sizing.
         /// </summary>
         /// <param name="socket">An already-connected socket to wrap. Must not be null.</param>
         /// <param name="options">Segment pool sizing for the send and receive pools. Must not be null.</param>
@@ -197,16 +211,16 @@ namespace DuneTransport.Transport
             expectedBytes = HeaderSize;
             receivedBytes = 0;
 
-            // Mutual confirmation, re-read side. A dispose or a disconnect
-            // that ran in the gap between the entry check above and here has
-            // marked this transport dead, so the re-read sees it and bails:
-            // release the segment, settle the claim, close the socket (the
-            // wait inside holds for a starter on the other side, so none is
-            // outrun), dispose the event object (the sweep may have skipped
-            // it, seeing our claim; no later operation will ever use it —
-            // every future start is rejected by the entry checks), and
-            // report. Issuing instead would throw in the socket call; the
-            // re-read makes that state unreachable.
+            // Mutual confirmation, re-read side. A dispose or a disconnect that
+            // ran in the gap between the entry checks above and here has marked
+            // this transport dead; the re-read sees the mark and bails: release
+            // the segment, settle the claim, close the socket (the wait inside
+            // holds for a starter on the other side, so no starter is outrun),
+            // dispose the event object (the Dispose sweep may have skipped it,
+            // seeing this claim; no later operation will ever use it — every
+            // future start is rejected by the entry checks), and report.
+            // Issuing instead would throw in the socket call; the re-read makes
+            // that state unreachable.
             if (Volatile.Read(ref _disposed) == 1)
             {
                 currentReceivingSegment.Release();
@@ -218,13 +232,13 @@ namespace DuneTransport.Transport
             }
             if (!IsConnected)
             {
-                // Settle without closing. The mark may be this transport's
-                // own (a socket error or a FIN settled the connection) and
-                // the socket still open; its owner closes it later through
-                // its own protocol, and a close here would be what makes
-                // the owner's next socket call throw. If the mark is the
-                // owner's (a disconnect running), the owner's close is
-                // already on its way. Either way the close is the owner's.
+                // Settle without closing. The mark may be this transport's own
+                // (a socket error or a FIN settled the connection) while the
+                // socket is still open; its owner closes it later through its
+                // own protocol, and a close here is what would make the
+                // owner's next socket call throw. If the mark is the owner's
+                // (a disconnect in progress), the owner's close is already on
+                // its way. Either way, the close belongs to the owner.
                 currentReceivingSegment.Release();
                 Interlocked.Exchange(ref _receiveOpState, 0);
                 OnPacketReceiveFailed?.Invoke(this, TransportError.SocketDisconnected);
@@ -238,19 +252,19 @@ namespace DuneTransport.Transport
         }
 
         /// <summary>
-        /// Issues the next socket receive operation, handling synchronous completions inline.
+        /// Issues the next socket receive, processing synchronous completions inline.
         /// </summary>
         /// <remarks>
         /// <para>
-        /// Enters a loop where synchronous completions are processed immediately without
-        /// returning to the caller. This avoids thread pool overhead for fast connections.
+        /// Loops while completions arrive synchronously, processing each without
+        /// returning to the caller — a fast connection pays no thread-pool round trip.
         /// </para>
         /// <para>
-        /// On a socket error, the current segment is released and the operation
-        /// state is cleared before returning. A throw in the socket call itself
-        /// is unreachable: the caller re-reads the dead marks after claiming,
-        /// and a close holds for our claimed state across the re-read and the
-        /// issue, so this only ever runs on a live socket.
+        /// A socket error releases the current segment and clears the operation slot
+        /// before returning. The socket call itself can no longer throw: the caller
+        /// re-reads the dispose and disconnect marks after claiming, and a close holds
+        /// for the claimed state across the re-read and the issue, so this runs only
+        /// on a live socket.
         /// </para>
         /// </remarks>
         private void IssueReceive()
@@ -258,13 +272,13 @@ namespace DuneTransport.Transport
             receiveEventArgs.SetBuffer(
                 currentReceivingSegment.Memory.Slice(receivedBytes, expectedBytes - receivedBytes));
 
-            // No outer catch: the socket call only throws SocketException
-            // (caught below; the throw in a dispose race is unreachable by
-            // the re-read above), SetBuffer cannot throw with a valid
-            // slice, and ProcessReceive either returns or fires its
-            // reports with the flag and segment already settled. A throw
-            // escaping this loop can only come from a subscriber of a
-            // failure report — a bug that must propagate, not be masked.
+            // No outer catch: the socket call throws only SocketException
+            // (caught below; the throw in a dispose race is unreachable by the
+            // caller's re-read), SetBuffer cannot throw for a valid slice, and
+            // ProcessReceive either returns or fires its reports with the slot
+            // and segment already settled. A throw escaping this loop can only
+            // come from a failure-report subscriber — a bug that must
+            // propagate, not be masked.
             while (true)
             {
                 bool pending;
@@ -289,7 +303,7 @@ namespace DuneTransport.Transport
                     // The operation is now in the kernel: truly in flight,
                     // and a close may safely run over it (it aborts and
                     // settles through a branch). This transition is what
-                    // releases any close that was waiting for our claim.
+                    // releases any close that was waiting on this claim.
                     Interlocked.Exchange(ref _receiveOpState, 2);
                     return;
                 }
@@ -304,15 +318,15 @@ namespace DuneTransport.Transport
         private void OnPacketReceivedEventHandler(object? sender, SocketAsyncEventArgs e)
         {
             // The completed operation is no longer in the kernel. If it
-            // settles, ProcessReceive has cleared the state by the time it
-            // returns; if it returns true, the state is still set and this
+            // settles, ProcessReceive has cleared the slot by the time it
+            // returns; if it returns true, the slot is still set and this
             // re-issue must hold a claim for its whole duration.
             if (ProcessReceive(e))
             {
                 // Re-issue with the same shape as a fresh start: claim,
                 // re-read, issue. The claim is what holds any close off
                 // while the issue is being set up — a close waiting on it
-                // cannot close the socket between our re-read and the
+                // cannot close the socket between this re-read and the
                 // issue. The re-read bails instead of issuing if a close
                 // already marked the transport dead while this completion
                 // was being processed.
@@ -344,9 +358,9 @@ namespace DuneTransport.Transport
         }
 
         /// <summary>
-        /// Processes a completed receive operation, handling the two-phase (header/payload) receive pipeline.
+        /// Processes a completed receive operation, advancing the two-phase (header/payload) pipeline.
         /// </summary>
-        /// <param name="onReceived">The completed socket async event arguments.</param>
+        /// <param name="onReceived">The asynchronous event arguments of the completed receive operation.</param>
         /// <returns><c>true</c> if more data should be received (partial phase); otherwise <c>false</c>.</returns>
         /// <remarks>
         /// <para>
@@ -463,18 +477,9 @@ namespace DuneTransport.Transport
             currentReceivingSegment = default;
             Interlocked.Exchange(ref _receiveOpState, 0);
 
-            try
-            {
-                OnPacketReceived?.Invoke(this, segmentToDeliver);
-            }
-            catch
-            {
-                // Handler bug — make sure the segment goes back to the pool.
-                // Release is idempotent, so it is safe even if the
-                // handler released before throwing.
-                segmentToDeliver.Release();
-                OnPacketReceiveFailed?.Invoke(this, TransportError.HandlerFailed);
-            }
+            // Contract: the subscriber must not throw. A throw escapes the
+            // socket-completion callback and crashes the process by design.
+            OnPacketReceived?.Invoke(this, segmentToDeliver);
 
             return false;
         }
@@ -515,7 +520,7 @@ namespace DuneTransport.Transport
                 return;
             }
 
-            if (!sendBuffer.GetRegisteredMemory(packet.SegmentIndex, packetSize + HeaderSize, out Memory<byte> memory))
+            if (!packet.TryGetMemory(packetSize + HeaderSize, out Memory<byte> memory))
             {
                 Interlocked.Exchange(ref _sendOpState, 0);
                 OnPacketSendFailed?.Invoke(this, packet, TransportError.InvalidSegment);
@@ -526,16 +531,16 @@ namespace DuneTransport.Transport
 
             currentSendingSegment = packet;
 
-            // Mutual confirmation, re-read side. A dispose or a disconnect
-            // that ran in the gap between the entry check above and here has
-            // marked this transport dead, so the re-read sees it and bails:
-            // settle the claim, close the socket (the wait inside holds for a
-            // starter on the other side, so none is outrun), dispose the
-            // event object (the sweep may have skipped it, seeing our
-            // claim; no later operation will ever use it), and hand the
-            // segment to the subscriber to release, matching the other
-            // send-failure reports. Issuing instead would throw in the
-            // socket call; the re-read makes that state unreachable.
+            // Mutual confirmation, re-read side. A dispose or a disconnect that
+            // ran in the gap between the entry checks above and here has marked
+            // this transport dead; the re-read sees the mark and bails: settle
+            // the claim, close the socket (the wait inside holds for a starter
+            // on the other side, so no starter is outrun), dispose the event
+            // object (the Dispose sweep may have skipped it, seeing this claim;
+            // no later operation will ever use it), and hand the segment to the
+            // subscriber to release, matching the other send-failure reports.
+            // Issuing instead would throw in the socket call; the re-read makes
+            // that state unreachable.
             if (Volatile.Read(ref _disposed) == 1)
             {
                 currentSendingSegment = default;
@@ -551,8 +556,9 @@ namespace DuneTransport.Transport
                 // side: the mark may be this transport's own (either
                 // direction's error or FIN branch), in which case the
                 // socket is still open and its owner closes it later
-                // through its own protocol. If the mark is the owner's,
-                // the owner's close is already on its way.
+                // through its own protocol. If the mark is the owner's
+                // (a disconnect in progress), the owner's close is already
+                // on its way. Either way, the close belongs to the owner.
                 currentSendingSegment = default;
                 Interlocked.Exchange(ref _sendOpState, 0);
                 OnPacketSendFailed?.Invoke(this, packet, TransportError.SocketDisconnected);
@@ -600,10 +606,11 @@ namespace DuneTransport.Transport
         /// </summary>
         /// <remarks>
         /// <para>
-        /// On socket error: fires <see cref="OnPacketSendFailed"/> with the segment (ownership transfers to subscriber).
-        /// On success: releases the segment, fires <see cref="OnPacketSent"/>.
-        /// On a dispose race: releases the segment and closes the socket and
-        /// event object the teardown side left to this completion.
+        /// On socket error: fires <see cref="OnPacketSendFailed"/> with the segment
+        /// (ownership transfers to the subscriber). On success: releases the
+        /// segment and fires <see cref="OnPacketSent"/>. On a dispose race:
+        /// releases the segment, and closes the socket and event object the
+        /// teardown side left to this completion.
         /// </para>
         /// </remarks>
         private void ProcessSend(SocketAsyncEventArgs onSent)
@@ -653,20 +660,20 @@ namespace DuneTransport.Transport
         /// <summary>
         /// Closes the socket on behalf of its owner, following the close
         /// protocol. The caller has already marked this transport dead
-        /// (disposed, or marked disconnected) before calling, and the mark
-        /// precedes every close — so a starter whose re-read already ran saw
-        /// the mark and bailed, and a starter whose re-read has not run yet
-        /// is in the claimed state, which the wait below holds for. A close
-        /// must never outrun the claimed (claimed-not-yet-issued) state: the
-        /// issue that follows it would throw on the dead socket. That state
-        /// contains no blocking call — a claim is followed by an issue or a
-        /// bail — so it always resolves as soon as its holder runs, and the
-        /// wait is a plain reading spin: lock-free, and unable to deadlock,
-        /// because an already-issued (in-flight) operation is never waited
-        /// for. A close runs over in-flight operations instead: aborting one
-        /// is safe — it settles through a branch — and for a receive against
-        /// a live peer, the close is precisely what settles it. Closing an
-        /// already-closed socket is a no-op, so racing closers are harmless.
+        /// (disposed, or marked disconnected) and the mark precedes every
+        /// close, so a starter whose re-read has already run saw the mark and
+        /// bailed, and a starter whose re-read has not yet run is in the
+        /// claimed state — which the wait below holds for. A close must never
+        /// outrun the claimed (claimed-not-yet-issued) state: the issue that
+        /// follows it would throw on the dead socket. That state contains no
+        /// blocking call — a claim is followed by an issue or a bail — so the
+        /// wait always resolves as soon as its holder runs. The wait is a
+        /// plain reading spin: lock-free and unable to deadlock, because an
+        /// already-issued (in-flight) operation is never waited for. A close
+        /// runs over in-flight operations instead: aborting one is safe — it
+        /// settles through a branch — and for a receive against a live peer,
+        /// the close is precisely what settles it. Closing an already-closed
+        /// socket is a no-op, so racing closers are harmless.
         /// </summary>
         internal void CloseSocket()
         {
@@ -687,22 +694,23 @@ namespace DuneTransport.Transport
         /// Releases whatever the operation fields still hold. Release is
         /// idempotent, so a racing completion that releases the same segment
         /// first is safe, and a field that already holds a default is a no-op.
-        /// The operation states are deliberately NOT cleared here: they are
-        /// the claim a concurrent socket teardown holds for, and the settling
+        /// The operation slots are deliberately NOT cleared here: they are the
+        /// claims a concurrent socket teardown holds for, and the settling
         /// completions clear them as they run.
         /// </para>
         /// <para>
-        /// Unwires and disposes the async event objects only when no operation
-        /// is claimed or in flight — a live or pending completion needs its
-        /// event object and disposes it itself when it settles (disposal is
-        /// idempotent, so whichever side disposes first simply wins).
+        /// Unwires and disposes each direction's event object only when that
+        /// direction has no operation claimed or in flight — a live or pending
+        /// completion needs its event object and disposes it itself when it
+        /// settles (disposal is idempotent, so whichever side disposes first
+        /// simply wins).
         /// </para>
         /// <para>
         /// Does NOT close the underlying socket — that is the responsibility
         /// of the caller (typically
-        /// <see cref="DuneSession.SocketConnectors.Connection"/>), which calls
-        /// the close protocol after this runs. A completion that settles after
-        /// this Dispose runs the same close protocol in turn.
+        /// <see cref="DuneSession.SocketConnectors.Connection"/>), which runs
+        /// the close protocol after this returns. A completion that settles
+        /// after this Dispose runs the same close protocol in turn.
         /// </para>
         /// </remarks>
         public void Dispose()
